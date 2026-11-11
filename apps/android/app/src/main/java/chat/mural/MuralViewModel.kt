@@ -197,7 +197,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val credentials = CredentialStore(application)
     private val api = APIClient(credentials)
     private val geminiCredentials = CredentialStore.gemini(application)
-    private val gemini = GeminiClient(geminiCredentials)
+    private val gemini: GeminiClient = GeminiClient(geminiCredentials)
     private val aiProviderStore = AIProviderStore(application)
     private val transport = LiveTransport(application, viewModelScope)
     private val providerStore = ConversationProviderStore(application)
