@@ -2,7 +2,7 @@
 
 ## Personal installation
 
-You need Android 8.0 or later and an OpenAI project key with access to the models Mural uses. A ChatGPT subscription does not include API credit.
+You need Android 8.0 or later and an OpenAI project key with access to the models Mural uses for voice. A ChatGPT subscription does not include API credit. Written replies and learning helpers can instead use a Google Gemini API key.
 
 Install the generated APK (`apps/android/app/build/outputs/apk/debug/app-debug.apk`) by opening it on the phone and allowing the installation, or from a computer:
 
@@ -26,7 +26,7 @@ Mural speaks the interface language of your phone: Spanish on a Spanish phone, E
 
 Choose the language you practise and the language for meanings. When you practise Mandarin, captions link each word and show pinyin underneath on Android 10 or later; **Hide pinyin** keeps the characters only. Read the consent to send audio and text to OpenAI. You can decline and still browse your local data.
 
-In **Settings**, save your own OpenAI key. Do not send it through chat or put it in repository files. It is encrypted with an Android Keystore key and is never included in learning backups.
+In **Settings**, save your own OpenAI key for voice. You can also choose Google Gemini as the provider for written replies and learning helpers, and save a Gemini API key. Keys are encrypted with an Android Keystore key and are never included in learning backups. Do not send either key through chat or put it in repository files.
 
 On **Talk**, start a conversation and allow the microphone. You should hear a greeting in the language you chose. **Type instead** lets you practise without the microphone. You can mute, ask for a little help, show meanings, tap a word to look it up, and end the conversation.
 
@@ -34,7 +34,7 @@ An active voice conversation continues when the screen dims or locks and when yo
 
 A voice conversation ends when audio is interrupted, when it reaches the chosen duration, or after 30 seconds of quiet, with a gentle check-in and a five-second countdown. Speaking or typing gives you time to continue; waiting for an answer also receives a bounded grace period. Locking the screen does not count as a reply or extend the silence limit.
 
-Mural needs the internet to talk, translate and search. History and vocabulary are available offline. Requests are billed to your OpenAI project; **Settings** shows recorded voice time and a voice cost estimate. The app's time limit is not a billing cap.
+Mural needs the internet to talk, translate and search. History and vocabulary are available offline. Voice requests are billed to your OpenAI project; Gemini requests are billed to your Google AI project. **Settings** shows recorded voice time and a voice cost estimate. The app's time limit is not a billing cap.
 
 ## Move data from iPhone
 
@@ -68,7 +68,7 @@ The interface tests install as a separate app, `chat.mural.android.uitest`, so t
 - **No device is listed:** check the cable, File transfer mode and USB debugging.
 - **Microphone blocked:** Android Settings → Apps → Mural → Permissions → Microphone. You can also type.
 - **Sound plays on the speaker with a Bluetooth headset:** connect the headset before starting the conversation. Mural chooses a connected headset on Android 12 or later; on Android 8–11 it uses the speaker.
-- **Key rejected or usage limit reached:** check the key, model access and project limits in your OpenAI account. Mural never needs you to share your key with anyone.
+- **Key rejected or usage limit reached:** check the key, model access and project limits in the corresponding OpenAI or Google AI project. Mural never needs you to share your key with anyone.
 - **Switching to another app:** Mural ends a voice conversation to release the microphone. Come back and start another; history is kept.
 - **Backup error:** make sure it is a complete Mural file under 30 MB. The importer rejects a file before merging invalid records.
 - **Update rejected because of the signature:** use the same signing key as the previous installation. Export a backup before any uninstall.

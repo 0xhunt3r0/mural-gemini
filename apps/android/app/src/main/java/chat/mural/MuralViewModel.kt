@@ -41,9 +41,21 @@ internal fun errorMessageRes(e: Throwable): Int = when (e) {
         ProviderFailureKind.invalidRequest -> R.string.error_provider_request
         ProviderFailureKind.unknown -> R.string.error_http_generic
     }
+    is GeminiException.MissingKey -> R.string.error_gemini_missing_key
+    is GeminiException.Refused -> R.string.error_request_refused
+    is GeminiException.InvalidResponse, is GeminiException.Incomplete -> R.string.error_gemini_incomplete_response
+    is GeminiException.Http -> when (e.kind) {
+        ProviderFailureKind.authentication -> R.string.error_gemini_401
+        ProviderFailureKind.modelAccess -> R.string.error_gemini_403_404
+        ProviderFailureKind.rateLimit -> R.string.error_gemini_429
+        ProviderFailureKind.unavailable -> R.string.error_provider_unavailable
+        ProviderFailureKind.invalidRequest -> R.string.error_provider_request
+        else -> R.string.error_gemini_generic
+    }
     is java.net.SocketTimeoutException -> R.string.error_request_timeout
     is java.net.UnknownHostException, is java.net.ConnectException -> R.string.error_request_connection
     is CredentialStore.CredentialException.Invalid -> R.string.error_key_invalid
+    is CredentialStore.CredentialException.InvalidGemini -> R.string.error_key_invalid_gemini
     is CredentialStore.CredentialException.Save -> R.string.error_key_save
     is CredentialStore.CredentialException.Remove -> R.string.error_key_remove
     else -> 0
@@ -86,9 +98,10 @@ internal fun requestErrorReference(error: Throwable): String? = safeRequestError
     else -> null
 })
 
-/** Whether the failure means the learner needs to add or fix their OpenAI key in Settings. */
+/** Whether the failure means the learner needs to add or fix their OpenAI or Gemini key in Settings. */
 internal fun errorNeedsKeySetup(e: Throwable): Boolean =
-    e is APIClient.APIException.MissingKey || (e is APIClient.APIException.Http && e.status == 401)
+    e is APIClient.APIException.MissingKey || (e is APIClient.APIException.Http && e.status == 401) ||
+        e is GeminiException.MissingKey || (e is GeminiException.Http && e.kind == ProviderFailureKind.authentication)
 
 /** Imported partial conversations are history, not local sessions awaiting cloud recovery. */
 internal fun prepareImportedArchive(data: String, importedAt: Double = nowSeconds()): Archive =
@@ -170,6 +183,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private var lookupJob: Job? = null
     var topicResult by mutableStateOf<TopicBrief?>(null); private set
     var hasKey by mutableStateOf(false); private set
+    var hasGeminiKey by mutableStateOf(false); private set
+    var aiProvider by mutableStateOf(AIProvider.OPENAI); private set
+    /** Key readiness for written replies, meanings, lookups and assessments. Voice always needs the OpenAI key. */
+    val hasActiveKey get() = if (aiProvider == AIProvider.GEMINI) hasGeminiKey else hasKey
     val language get() = LanguageRegistry.get(archive.preferences.learningLanguageID)!!
     val learner get() = LearningEngine.project(archive.sessions, language.id, archive.preferences.hiddenWords)
     val isRunning get() = state in listOf("connecting", "active", "closing")
@@ -179,6 +196,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LearningRepository(application)
     private val credentials = CredentialStore(application)
     private val api = APIClient(credentials)
+    private val geminiCredentials = CredentialStore.gemini(application)
+    private val gemini = GeminiClient(geminiCredentials)
+    private val aiProviderStore = AIProviderStore(application)
     private val transport = LiveTransport(application, viewModelScope)
     private val providerStore = ConversationProviderStore(application)
     private val hostedConfiguration = HostedConfiguration.parse(BuildConfig.MANAGED_API_ORIGIN)
@@ -285,6 +305,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 conversationProvider = providers.selection
                 finalAssessmentTickets = ConversationProviderPolicy.recoveryTickets(loaded.first.finalAssessments, hostedSessionIDs)
                 hasKey = loaded.second
+                hasGeminiKey = withContext(Dispatchers.IO) { geminiCredentials.hasKey }
+                aiProvider = aiProviderStore.read()
                 storageReady = true
                 recoverFinalAssessments()
                 refreshHostedReadiness()
@@ -339,7 +361,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             val current = archive.sessions.firstOrNull { it.id == snapshot.id }
             val ticket = finalAssessmentTickets.firstOrNull { it.matches(snapshot, passage) }
             if (snapshot.id in hostedSessionIDs) false
-            else if (!storageReady || !hasKey || archive.preferences.aiConsentVersion != 1 || current == null ||
+            else if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1 || current == null ||
                 ticket == null || !FinalAssessmentRecovery.canAttempt(ticket, current, nowSeconds())) false
             else {
                 finalAssessmentTickets = finalAssessmentTickets.map {
@@ -359,7 +381,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun recoverFinalAssessments() {
-        if (!storageReady || !hasKey || archive.preferences.aiConsentVersion != 1) return
+        if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1) return
         val remaining = FinalAssessmentRecovery.MAX_RECOVERED_PER_LAUNCH - recoveredAssessmentIDs.size
         if (remaining <= 0) return
         FinalAssessmentRecovery.recover(archive.sessions, finalAssessmentTickets, nowSeconds())
@@ -400,6 +422,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         val res = errorMessageRes(e)
         val message = when {
             res == R.string.error_http_generic && e is APIClient.APIException.Http -> app.getString(res, e.status)
+            res == R.string.error_gemini_generic && e is GeminiException.Http -> app.getString(res, e.status)
             res != 0 -> app.getString(res)
             e is LiveTransport.TransportException -> e.message ?: app.getString(fallback)
             else -> app.getString(fallback)
@@ -423,8 +446,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             presentError(getApplication<Application>().getString(R.string.error_accept_ai_consent)); return false
         }
         val currentHosted = session?.id in hostedSessionIDs
-        if (!currentHosted && conversationProvider == ConversationProvider.PERSONAL_KEY && !hasKey) {
-            presentError(getApplication<Application>().getString(R.string.error_missing_key), needsKeySetup = true); return false
+        if (!currentHosted && conversationProvider == ConversationProvider.PERSONAL_KEY && !hasActiveKey) {
+            presentError(getApplication<Application>().getString(
+                if (aiProvider == AIProvider.GEMINI) R.string.error_gemini_missing_key else R.string.error_missing_key), needsKeySetup = true)
+            return false
         }
         return true
     }
@@ -566,8 +591,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             return hostedBindings.respond(localID, purpose, logicalID, instructions, input, schema, search, onText)
         }
         if (localID == null && conversationProvider == ConversationProvider.HOSTED_MINUTES) throw HostedFailure.Unavailable
-        return if (onText != null && purpose == HelperPurpose.MEANING) api.streamMeaning(instructions, input, onText)
-        else api.respond(instructions, input, schema, search, purpose)
+        // Voice sessions always connect to OpenAI; only these helper requests follow the chosen provider.
+        val personal: TeachingClient = if (aiProvider == AIProvider.GEMINI) gemini else api
+        return if (onText != null && purpose == HelperPurpose.MEANING) personal.streamMeaning(instructions, input, onText)
+        else personal.respond(instructions, input, schema, search, purpose)
     }
     private fun helperContext(snapshot: SessionRecord, passage: Passage? = null): String =
         if (snapshot.id in hostedSessionIDs) ConversationHistory.helperContext(snapshot, passage)
@@ -684,6 +711,34 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         try { credentials.delete(); hasKey = false; providerIssue = null }
         catch (e: Exception) { presentError(e, R.string.error_key_delete_failed) }
         finally { hasKey = credentials.hasKey }
+    }
+    fun saveGeminiKey(key: String, useAfterSave: Boolean = true) {
+        if (isRunning) return
+        try {
+            geminiCredentials.save(key); hasGeminiKey = geminiCredentials.hasKey
+            if (useAfterSave) selectConversationProvider(ConversationProvider.PERSONAL_KEY)
+            recoverFinalAssessments(); notice = getApplication<Application>().getString(R.string.notice_key_saved)
+        } catch (e: Exception) { presentError(e, R.string.error_key_save_failed) }
+    }
+    fun deleteGeminiKey() {
+        if (isRunning) return
+        try { geminiCredentials.delete(); hasGeminiKey = false }
+        catch (e: Exception) { presentError(e, R.string.error_key_delete_failed) }
+        finally { hasGeminiKey = geminiCredentials.hasKey }
+    }
+    /** Changes only which service answers helper requests. Both keys stay saved. */
+    fun selectAIProvider(provider: AIProvider) {
+        if (isRunning || !storageReady || provider == aiProvider) return
+        viewModelScope.launch {
+            try {
+                aiProviderStore.select(provider)
+                aiProvider = provider
+                if (provider == AIProvider.GEMINI) providerIssue = null // that issue describes the OpenAI account
+                recoverFinalAssessments()
+            } catch (_: Exception) {
+                presentError(getApplication<Application>().getString(R.string.provider_preference_save_failed))
+            }
+        }
     }
     fun updatePreferences(preferences: Preferences) {
         if (isRunning || !storageReady) return

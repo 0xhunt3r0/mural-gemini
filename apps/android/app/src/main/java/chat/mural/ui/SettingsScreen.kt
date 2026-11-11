@@ -63,6 +63,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
+import chat.mural.core.AIProvider
 import chat.mural.core.LanguageRegistry
 import chat.mural.core.MeaningLanguages
 import chat.mural.core.MinuteBalanceTime
@@ -80,6 +81,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     var page by rememberSaveable { mutableStateOf("main") }
     var keyDialog by rememberSaveable { mutableStateOf(false) }
     var keyDialogUseAfterSave by rememberSaveable { mutableStateOf(false) }
+    var keyDialogForceOpenAI by rememberSaveable { mutableStateOf(false) }
     var deleteKey by rememberSaveable { mutableStateOf(false) }
     var deleteAll by rememberSaveable { mutableStateOf(false) }
     var permissionDetails by rememberSaveable { mutableStateOf(false) }
@@ -99,6 +101,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         if (focusAdvanced) listState.scrollToItem(4)
     }
     val prefs = vm.archive.preferences
+    val gemini = vm.aiProvider == AIProvider.GEMINI
+    val keyTitle = stringResource(if (gemini) R.string.settings_gemini_key else R.string.settings_openai_key)
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val version = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
@@ -107,14 +111,26 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         if (vm.isRunning) return
         val choice = chat.mural.core.ConversationProvider.valueOf(id)
         if (choice == vm.conversationProvider) return
+        // Voice always uses the OpenAI key, so personal conversation mode requires it even when helpers use Gemini.
         if (choice == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey) {
-            keyDialogUseAfterSave = true; keyDialog = true
+            keyDialogUseAfterSave = true; keyDialogForceOpenAI = true; keyDialog = true
         } else {
             if (choice == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
                 checkingSwitch = true
                 switchBalance = null
             }
             switchTicket++; pendingSource = choice; sourceDialog = true
+        }
+    }
+    fun chooseAIProvider(id: String) {
+        if (vm.isRunning) return
+        val choice = AIProvider.valueOf(id)
+        if (choice == vm.aiProvider) return
+        vm.selectAIProvider(choice)
+        if (vm.aiProvider != choice) return
+        // Each provider keeps its own key; ask only when this one has none yet.
+        if (!(if (choice == AIProvider.GEMINI) vm.hasGeminiKey else vm.hasKey)) {
+            keyDialogUseAfterSave = true; keyDialogForceOpenAI = false; keyDialog = true
         }
     }
     androidx.compose.runtime.LaunchedEffect(sourceDialog, pendingSource) {
@@ -127,7 +143,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         val title = when (page) {
             "interests" -> stringResource(R.string.settings_interests_label)
             "data" -> stringResource(R.string.settings_learning_data)
-            "key" -> stringResource(R.string.settings_openai_key)
+            "key" -> keyTitle
             "about" -> stringResource(R.string.settings_about)
             else -> stringResource(R.string.settings_navigation_title)
         }
@@ -201,13 +217,23 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                     chat.mural.core.ConversationProvider.PERSONAL_KEY.name to stringResource(R.string.settings_my_openai_key)),
                                 "settings-conversation-access", !vm.isRunning, ::chooseSource)
                             if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
-                                Text(stringResource(R.string.settings_personal_key_note), style = MaterialTheme.typography.bodySmall,
+                                Text(stringResource(if (gemini) R.string.settings_personal_gemini_key_note else R.string.settings_personal_key_note),
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                             }
-                            if (vm.hasKey || vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
+                            SettingsDivider()
+                            SettingsChoiceRow(stringResource(R.string.settings_ai_provider),
+                                stringResource(if (gemini) R.string.settings_provider_gemini else R.string.settings_provider_openai),
+                                vm.aiProvider.name,
+                                listOf(
+                                    AIProvider.OPENAI.name to stringResource(R.string.settings_provider_openai),
+                                    AIProvider.GEMINI.name to stringResource(R.string.settings_provider_gemini),
+                                ),
+                                "settings-ai-provider", !vm.isRunning, ::chooseAIProvider)
+                            if (vm.hasActiveKey || vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
                                 SettingsDivider()
-                                SettingsRow(stringResource(R.string.settings_openai_key),
-                                    stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required),
+                                SettingsRow(keyTitle,
+                                    stringResource(if (vm.hasActiveKey) R.string.settings_key_saved_short else R.string.settings_key_required),
                                     symbol = SettingsSymbol.KEY, chevron = true, modifier = Modifier.testTag("advanced-api-key"),
                                     onClick = { page = "key" })
                             }
@@ -263,18 +289,20 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                     }
                 }
                 "key" -> item {
-                    SettingsGroup(footer = stringResource(R.string.settings_key_owner_footer)) {
-                        SettingsRow(stringResource(R.string.settings_openai_key),
-                            stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required))
+                    SettingsGroup(footer = stringResource(if (gemini) R.string.settings_gemini_key_owner_footer else R.string.settings_key_owner_footer)) {
+                        SettingsRow(keyTitle,
+                            stringResource(if (vm.hasActiveKey) R.string.settings_key_saved_short else R.string.settings_key_required))
                         SettingsDivider()
-                        SettingsRow(stringResource(if (vm.hasKey) R.string.settings_replace_key else R.string.settings_save_key),
+                        SettingsRow(stringResource(if (vm.hasActiveKey) R.string.settings_replace_key else R.string.settings_save_key),
                             enabled = !vm.isRunning, chevron = true, onClick = {
-                                keyDialogUseAfterSave = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
+                                keyDialogUseAfterSave = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasActiveKey
+                                keyDialogForceOpenAI = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
                                 keyDialog = true
                             })
                         SettingsDivider()
-                        SettingsRow(stringResource(R.string.settings_open_api_keys), onClick = { open("https://platform.openai.com/api-keys") })
-                        if (vm.hasKey) {
+                        SettingsRow(stringResource(R.string.settings_open_api_keys),
+                            onClick = { open(if (gemini) "https://aistudio.google.com/apikey" else "https://platform.openai.com/api-keys") })
+                        if (vm.hasActiveKey) {
                             SettingsDivider()
                             SettingsRow(stringResource(R.string.settings_remove_key), enabled = !vm.isRunning,
                                 tint = MuralColors.Red, onClick = { deleteKey = true })
@@ -290,7 +318,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         }
                         SettingsDivider()
                         SettingsRow(stringResource(R.string.settings_usage_billing_link),
-                            onClick = { open("https://platform.openai.com/usage") })
+                            onClick = { open(if (gemini) "https://ai.google.dev/gemini-api/docs/billing" else "https://platform.openai.com/usage") })
                         if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
                             val usage = UsageSummary.of(vm.archive.sessions)
                             SettingsDivider()
@@ -313,6 +341,11 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         SettingsDivider()
                         SettingsRow(stringResource(R.string.settings_openai_data_controls),
                             onClick = { open("https://developers.openai.com/api/docs/guides/your-data") })
+                        if (gemini) {
+                            SettingsDivider()
+                            SettingsRow(stringResource(R.string.settings_gemini_data_controls),
+                                onClick = { open("https://ai.google.dev/gemini-api/terms") })
+                        }
                         Text(stringResource(R.string.settings_data_use_footer), style = MaterialTheme.typography.bodySmall,
                             color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         SettingsDivider()
@@ -375,7 +408,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
             Text(stringResource(if (pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES)
                 R.string.account_mural_minutes else R.string.settings_my_openai_key))
         } }, dismissButton = { MuralTextButton(onClick = { switchTicket++; sourceDialog = false }) { Text(stringResource(R.string.common_cancel)) } })
-    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, onDismiss = { keyDialog = false })
+    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, forceOpenAI = keyDialogForceOpenAI, onDismiss = {
+        keyDialog = false; keyDialogForceOpenAI = false
+    })
     if (notices) NoticesDialog(onDismiss = { notices = false })
     if (history) SettingsHistorySheet(vm, onDismiss = { history = false }, onSelect = { transcript = it }, onDelete = { deleteSession = it })
     if (permissionDetails) AlertDialog(onDismissRequest = { permissionDetails = false },
@@ -393,7 +428,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                 enabled = !vm.isRunning, modifier = Modifier.testTag("review-ai-consent")) { Text(stringResource(R.string.settings_review_consent_button)) }
         }, dismissButton = { MuralTextButton(onClick = { permissionDetails = false }) { Text(stringResource(R.string.common_close)) } })
     if (deleteKey) ConfirmDialog(stringResource(R.string.settings_delete_key_confirm_title), stringResource(R.string.settings_delete_key_confirm_message), stringResource(R.string.common_delete), {
-        vm.deleteKey(); deleteKey = false
+        if (gemini) vm.deleteGeminiKey() else vm.deleteKey(); deleteKey = false
     }, { deleteKey = false })
     if (deleteAll) ConfirmDialog(stringResource(R.string.settings_delete_all_confirm_title), stringResource(R.string.settings_delete_all_confirm_message), stringResource(R.string.settings_delete_all_confirm_button), {
         vm.deleteLearningData(); deleteAll = false
@@ -447,9 +482,10 @@ private fun SettingsHistorySheet(vm: MuralViewModel, onDismiss: () -> Unit, onSe
 }
 
 @Composable
-private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, onDismiss: () -> Unit) {
+private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, forceOpenAI: Boolean = false, onDismiss: () -> Unit) {
     // Intentionally starts empty even when a key exists; secrets never flow back into Compose state.
     var key by remember { mutableStateOf("") }
+    val saveOpenAI = forceOpenAI || vm.aiProvider != AIProvider.GEMINI
     Dialog(onDismissRequest = { key = ""; onDismiss() }) {
         val view = LocalView.current
         DisposableEffect(view) {
@@ -473,7 +509,10 @@ private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, onDismiss: () -
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     MuralTextButton(onClick = { key = ""; onDismiss() }) { Text(stringResource(R.string.common_cancel)) }
-                    Button(onClick = { vm.saveKey(key.trim(), useAfterSave); key = ""; onDismiss() }, enabled = key.isNotBlank()) { Text(stringResource(R.string.common_save)) }
+                    Button(onClick = {
+                        if (saveOpenAI) vm.saveKey(key.trim(), useAfterSave) else vm.saveGeminiKey(key.trim(), useAfterSave)
+                        key = ""; onDismiss()
+                    }, enabled = key.isNotBlank()) { Text(stringResource(R.string.common_save)) }
                 }
             }
         }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_provider_openai">OpenAI</string>
+    <string name="settings_provider_gemini">Google Gemini</string>
+    <string name="settings_ai_provider">AI provider</string>
+    <string name="settings_gemini_key">Gemini API key</string>
+    <string name="settings_gemini_key_owner_footer">Usage is billed to your Google AI project, which may include a free tier. The key stays encrypted on this phone and is sent only to Google. Gemini answers written replies, meanings, lookups and topics. Voice conversations still use your OpenAI key.</string>
+    <string name="settings_personal_gemini_key_note">No Mural minute limit. Your Google AI project covers Gemini usage. Voice conversations still use your OpenAI key.</string>
+    <string name="settings_gemini_data_controls">Gemini API data use</string>
+    <string name="error_gemini_missing_key">Add your Gemini key in Settings to begin.</string>
+    <string name="error_key_invalid_gemini">Enter a valid Gemini API key.</string>
+    <string name="error_gemini_401">Your Gemini key wasn\'t accepted. Check it in Settings.</string>
+    <string name="error_gemini_403_404">This API key may not have access to the requested Gemini model. Check your Google AI project.</string>
+    <string name="error_gemini_429">Gemini is limiting requests or your quota is used up. Wait briefly and try again, or check your Google AI project\'s limits.</string>
+    <string name="error_gemini_generic">Gemini couldn\'t complete the request (HTTP %1$d). Please try again.</string>
+    <string name="error_gemini_incomplete_response">Gemini returned an incomplete response. Please try again.</string>
+</resources>
