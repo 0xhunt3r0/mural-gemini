@@ -1,0 +1,853 @@
+--- a/apps/android/app/src/main/java/chat/mural/MuralViewModel.kt
++++ b/apps/android/app/src/main/java/chat/mural/MuralViewModel.kt
+@@ -41,9 +41,21 @@
+         ProviderFailureKind.invalidRequest -> R.string.error_provider_request
+         ProviderFailureKind.unknown -> R.string.error_http_generic
+     }
++    is GeminiException.MissingKey -> R.string.error_gemini_missing_key
++    is GeminiException.Refused -> R.string.error_request_refused
++    is GeminiException.InvalidResponse, is GeminiException.Incomplete -> R.string.error_gemini_incomplete_response
++    is GeminiException.Http -> when (e.kind) {
++        ProviderFailureKind.authentication -> R.string.error_gemini_401
++        ProviderFailureKind.modelAccess -> R.string.error_gemini_403_404
++        ProviderFailureKind.rateLimit -> R.string.error_gemini_429
++        ProviderFailureKind.unavailable -> R.string.error_provider_unavailable
++        ProviderFailureKind.invalidRequest -> R.string.error_provider_request
++        else -> R.string.error_gemini_generic
++    }
+     is java.net.SocketTimeoutException -> R.string.error_request_timeout
+     is java.net.UnknownHostException, is java.net.ConnectException -> R.string.error_request_connection
+     is CredentialStore.CredentialException.Invalid -> R.string.error_key_invalid
++    is CredentialStore.CredentialException.InvalidGemini -> R.string.error_key_invalid_gemini
+     is CredentialStore.CredentialException.Save -> R.string.error_key_save
+     is CredentialStore.CredentialException.Remove -> R.string.error_key_remove
+     else -> 0
+@@ -86,9 +98,10 @@
+     else -> null
+ })
+ 
+-/** Whether the failure means the learner needs to add or fix their OpenAI key in Settings. */
++/** Whether the failure means the learner needs to add or fix their OpenAI or Gemini key in Settings. */
+ internal fun errorNeedsKeySetup(e: Throwable): Boolean =
+-    e is APIClient.APIException.MissingKey || (e is APIClient.APIException.Http && e.status == 401)
++    e is APIClient.APIException.MissingKey || (e is APIClient.APIException.Http && e.status == 401) ||
++        e is GeminiException.MissingKey || (e is GeminiException.Http && e.kind == ProviderFailureKind.authentication)
+ 
+ /** Imported partial conversations are history, not local sessions awaiting cloud recovery. */
+ internal fun prepareImportedArchive(data: String, importedAt: Double = nowSeconds()): Archive =
+@@ -170,6 +183,10 @@
+     private var lookupJob: Job? = null
+     var topicResult by mutableStateOf<TopicBrief?>(null); private set
+     var hasKey by mutableStateOf(false); private set
++    var hasGeminiKey by mutableStateOf(false); private set
++    var aiProvider by mutableStateOf(AIProvider.OPENAI); private set
++    /** Key readiness for written replies, meanings, lookups and assessments. Voice always needs the OpenAI key. */
++    val hasActiveKey get() = if (aiProvider == AIProvider.GEMINI) hasGeminiKey else hasKey
+     val language get() = LanguageRegistry.get(archive.preferences.learningLanguageID)!!
+     val learner get() = LearningEngine.project(archive.sessions, language.id, archive.preferences.hiddenWords)
+     val isRunning get() = state in listOf("connecting", "active", "closing")
+@@ -179,6 +196,9 @@
+     private val repository = LearningRepository(application)
+     private val credentials = CredentialStore(application)
+     private val api = APIClient(credentials)
++    private val geminiCredentials = CredentialStore.gemini(application)
++    private val gemini = GeminiClient(geminiCredentials)
++    private val aiProviderStore = AIProviderStore(application)
+     private val transport = LiveTransport(application, viewModelScope)
+     private val providerStore = ConversationProviderStore(application)
+     private val hostedConfiguration = HostedConfiguration.parse(BuildConfig.MANAGED_API_ORIGIN)
+@@ -285,6 +305,8 @@
+                 conversationProvider = providers.selection
+                 finalAssessmentTickets = ConversationProviderPolicy.recoveryTickets(loaded.first.finalAssessments, hostedSessionIDs)
+                 hasKey = loaded.second
++                hasGeminiKey = withContext(Dispatchers.IO) { geminiCredentials.hasKey }
++                aiProvider = aiProviderStore.read()
+                 storageReady = true
+                 recoverFinalAssessments()
+                 refreshHostedReadiness()
+@@ -339,7 +361,7 @@
+             val current = archive.sessions.firstOrNull { it.id == snapshot.id }
+             val ticket = finalAssessmentTickets.firstOrNull { it.matches(snapshot, passage) }
+             if (snapshot.id in hostedSessionIDs) false
+-            else if (!storageReady || !hasKey || archive.preferences.aiConsentVersion != 1 || current == null ||
++            else if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1 || current == null ||
+                 ticket == null || !FinalAssessmentRecovery.canAttempt(ticket, current, nowSeconds())) false
+             else {
+                 finalAssessmentTickets = finalAssessmentTickets.map {
+@@ -359,7 +381,7 @@
+     }
+ 
+     private fun recoverFinalAssessments() {
+-        if (!storageReady || !hasKey || archive.preferences.aiConsentVersion != 1) return
++        if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1) return
+         val remaining = FinalAssessmentRecovery.MAX_RECOVERED_PER_LAUNCH - recoveredAssessmentIDs.size
+         if (remaining <= 0) return
+         FinalAssessmentRecovery.recover(archive.sessions, finalAssessmentTickets, nowSeconds())
+@@ -400,6 +422,7 @@
+         val res = errorMessageRes(e)
+         val message = when {
+             res == R.string.error_http_generic && e is APIClient.APIException.Http -> app.getString(res, e.status)
++            res == R.string.error_gemini_generic && e is GeminiException.Http -> app.getString(res, e.status)
+             res != 0 -> app.getString(res)
+             e is LiveTransport.TransportException -> e.message ?: app.getString(fallback)
+             else -> app.getString(fallback)
+@@ -423,8 +446,10 @@
+             presentError(getApplication<Application>().getString(R.string.error_accept_ai_consent)); return false
+         }
+         val currentHosted = session?.id in hostedSessionIDs
+-        if (!currentHosted && conversationProvider == ConversationProvider.PERSONAL_KEY && !hasKey) {
+-            presentError(getApplication<Application>().getString(R.string.error_missing_key), needsKeySetup = true); return false
++        if (!currentHosted && conversationProvider == ConversationProvider.PERSONAL_KEY && !hasActiveKey) {
++            presentError(getApplication<Application>().getString(
++                if (aiProvider == AIProvider.GEMINI) R.string.error_gemini_missing_key else R.string.error_missing_key), needsKeySetup = true)
++            return false
+         }
+         return true
+     }
+@@ -566,8 +591,10 @@
+             return hostedBindings.respond(localID, purpose, logicalID, instructions, input, schema, search, onText)
+         }
+         if (localID == null && conversationProvider == ConversationProvider.HOSTED_MINUTES) throw HostedFailure.Unavailable
+-        return if (onText != null && purpose == HelperPurpose.MEANING) api.streamMeaning(instructions, input, onText)
+-        else api.respond(instructions, input, schema, search, purpose)
++        // Voice sessions always connect to OpenAI; only these helper requests follow the chosen provider.
++        val personal: TeachingClient = if (aiProvider == AIProvider.GEMINI) gemini else api
++        return if (onText != null && purpose == HelperPurpose.MEANING) personal.streamMeaning(instructions, input, onText)
++        else personal.respond(instructions, input, schema, search, purpose)
+     }
+     private fun helperContext(snapshot: SessionRecord, passage: Passage? = null): String =
+         if (snapshot.id in hostedSessionIDs) ConversationHistory.helperContext(snapshot, passage)
+@@ -685,6 +712,34 @@
+         catch (e: Exception) { presentError(e, R.string.error_key_delete_failed) }
+         finally { hasKey = credentials.hasKey }
+     }
++    fun saveGeminiKey(key: String, useAfterSave: Boolean = true) {
++        if (isRunning) return
++        try {
++            geminiCredentials.save(key); hasGeminiKey = geminiCredentials.hasKey
++            if (useAfterSave) selectConversationProvider(ConversationProvider.PERSONAL_KEY)
++            recoverFinalAssessments(); notice = getApplication<Application>().getString(R.string.notice_key_saved)
++        } catch (e: Exception) { presentError(e, R.string.error_key_save_failed) }
++    }
++    fun deleteGeminiKey() {
++        if (isRunning) return
++        try { geminiCredentials.delete(); hasGeminiKey = false }
++        catch (e: Exception) { presentError(e, R.string.error_key_delete_failed) }
++        finally { hasGeminiKey = geminiCredentials.hasKey }
++    }
++    /** Changes only which service answers helper requests. Both keys stay saved. */
++    fun selectAIProvider(provider: AIProvider) {
++        if (isRunning || !storageReady || provider == aiProvider) return
++        viewModelScope.launch {
++            try {
++                aiProviderStore.select(provider)
++                aiProvider = provider
++                if (provider == AIProvider.GEMINI) providerIssue = null // that issue describes the OpenAI account
++                recoverFinalAssessments()
++            } catch (_: Exception) {
++                presentError(getApplication<Application>().getString(R.string.provider_preference_save_failed))
++            }
++        }
++    }
+     fun updatePreferences(preferences: Preferences) {
+         if (isRunning || !storageReady) return
+         if (LanguageRegistry.get(preferences.learningLanguageID) == null || preferences.meaningLanguage !in MeaningLanguages.all || preferences.sessionMinutes !in 1..60) return
+--- /dev/null
++++ b/apps/android/app/src/main/java/chat/mural/core/AIProvider.kt
+@@ -0,0 +1,24 @@
++package chat.mural.core
++
++import android.content.Context
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++
++/**
++ * Which AI service answers written replies, meanings, word lookups, topics and assessments when the learner
++ * uses their own key. Voice conversations always use OpenAI. Each provider keeps its own key, so switching
++ * never removes either one.
++ */
++enum class AIProvider { OPENAI, GEMINI }
++
++/** Holds only the provider name. It never contains credentials and is excluded from backups with the other preferences. */
++internal class AIProviderStore(context: Context) {
++    private val preferences = context.getSharedPreferences("mural_ai_provider", Context.MODE_PRIVATE)
++    suspend fun read(): AIProvider = withContext(Dispatchers.IO) {
++        runCatching { AIProvider.valueOf(preferences.getString("selection", null).orEmpty()) }
++            .getOrDefault(AIProvider.OPENAI)
++    }
++    suspend fun select(provider: AIProvider) = withContext(Dispatchers.IO) {
++        check(preferences.edit().putString("selection", provider.name).commit())
++    }
++}
+--- a/apps/android/app/src/main/java/chat/mural/network/CredentialStore.kt
++++ b/apps/android/app/src/main/java/chat/mural/network/CredentialStore.kt
+@@ -10,11 +10,13 @@
+ import javax.crypto.SecretKey
+ import javax.crypto.spec.GCMParameterSpec
+ 
+-/** Stores the OpenAI API key encrypted by a non-exportable Android Keystore key. */
++/** Stores one API key (OpenAI unless built with [gemini]) encrypted by a non-exportable Android Keystore key. */
+ class CredentialStore internal constructor(
+     context: Context,
+     preferencesName: String,
+     private val keyAlias: String,
++    private val isValid: (String) -> Boolean = ::isOpenAIKey,
++    private val invalid: CredentialException = CredentialException.Invalid,
+ ) {
+     constructor(context: Context) : this(context, PREFERENCES, KEY_ALIAS)
+ 
+@@ -26,8 +28,8 @@
+     @Synchronized
+     fun save(key: String) {
+         val value = key.trim()
+-        if (!value.startsWith("sk-") || value.length < 20 || value.any(Char::isWhitespace)) {
+-            throw CredentialException.Invalid
++        if (!isValid(value)) {
++            throw invalid
+         }
+ 
+         try {
+@@ -59,7 +61,7 @@
+                 GCMParameterSpec(GCM_TAG_BITS, Base64.decode(encodedIv, Base64.NO_WRAP)),
+             )
+             cipher.doFinal(Base64.decode(encodedCiphertext, Base64.NO_WRAP)).toString(Charsets.UTF_8)
+-                .takeIf { it.startsWith("sk-") && it.length >= 20 && it.none(Char::isWhitespace) }
++                .takeIf(isValid)
+                 ?: clearUnreadableCredential()
+         } catch (_: Exception) {
+             clearUnreadableCredential()
+@@ -109,6 +111,7 @@
+ 
+     sealed class CredentialException(message: String) : IllegalStateException(message) {
+         data object Invalid : CredentialException("Enter a valid OpenAI API key.")
++        data object InvalidGemini : CredentialException("Enter a valid Gemini API key.")
+         data object Save : CredentialException("The key couldn't be saved securely on this device.")
+         data object Remove : CredentialException("The key couldn't be removed. Unlock this device and try again.")
+     }
+@@ -119,8 +122,22 @@
+         private const val CIPHERTEXT = "ciphertext"
+         private const val IV = "iv"
+         private const val KEY_ALIAS = "chat.mural.openai.aes"
++        private const val GEMINI_PREFERENCES = "mural_gemini_credentials"
++        private const val GEMINI_KEY_ALIAS = "chat.mural.gemini.aes"
+         private const val ANDROID_KEY_STORE = "AndroidKeyStore"
+         private const val TRANSFORMATION = "AES/GCM/NoPadding"
+         private const val GCM_TAG_BITS = 128
++
++        /** A separate store, preferences file and Keystore alias, so the two keys never affect each other. */
++        fun gemini(context: Context) = CredentialStore(
++            context, GEMINI_PREFERENCES, GEMINI_KEY_ALIAS, ::isGeminiKey, CredentialException.InvalidGemini,
++        )
+     }
+ }
++
++internal fun isOpenAIKey(value: String): Boolean =
++    value.startsWith("sk-") && value.length >= 20 && value.none(Char::isWhitespace)
++
++/** Google has changed its key format before, so only length and printable ASCII are checked. An OpenAI key is refused. */
++internal fun isGeminiKey(value: String): Boolean =
++    value.length in 20..256 && value.all { it.code in 33..126 } && !value.startsWith("sk-")
+--- /dev/null
++++ b/apps/android/app/src/main/java/chat/mural/network/GeminiClient.kt
+@@ -0,0 +1,196 @@
++package chat.mural.network
++
++import chat.mural.core.ProviderFailureKind
++import java.io.IOException
++import java.util.concurrent.TimeUnit
++import kotlin.coroutines.resume
++import kotlin.coroutines.resumeWithException
++import kotlinx.coroutines.suspendCancellableCoroutine
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++import kotlinx.serialization.json.buildJsonArray
++import kotlinx.serialization.json.buildJsonObject
++import kotlinx.serialization.json.contentOrNull
++import kotlinx.serialization.json.jsonObject
++import kotlinx.serialization.json.jsonPrimitive
++import kotlinx.serialization.json.put
++import okhttp3.Call
++import okhttp3.Callback
++import okhttp3.CookieJar
++import okhttp3.HttpUrl
++import okhttp3.MediaType.Companion.toMediaType
++import okhttp3.OkHttpClient
++import okhttp3.Request
++import okhttp3.RequestBody.Companion.toRequestBody
++import okhttp3.Response
++import okio.Buffer
++
++/**
++ * Text-only Gemini adapter for the learner's own key. It answers the same helper requests as [APIClient]
++ * (written replies, meanings, lookups, topics and assessments). Voice conversations stay on OpenAI.
++ * The key travels in a header, never in the URL, and no request or response body is logged.
++ */
++class GeminiClient private constructor(
++    private val readCredential: () -> String?,
++    private val client: OkHttpClient = defaultClient(),
++    private val baseUrl: HttpUrl = API_BASE_URL,
++) : TeachingClient {
++    constructor(credentials: CredentialStore) : this(credentials::read)
++
++    internal constructor(key: String?, client: OkHttpClient, baseUrl: HttpUrl) :
++        this({ key }, client, baseUrl)
++
++    override suspend fun respond(
++        instructions: String,
++        input: String,
++        schema: JsonObject?,
++        search: Boolean,
++        purpose: HelperPurpose?,
++    ): APIResult = decodeGeminiResponse(post(requestBody(instructions, input, schema, search)))
++
++    /**
++     * Gemini does not expose the same SSE event stream as OpenAI Responses.
++     * Deliver the complete meaning in one callback so the UI contract is preserved
++     * without changing the OpenAI streaming path.
++     */
++    override suspend fun streamMeaning(
++        instructions: String,
++        input: String,
++        onText: (String) -> Unit,
++    ): APIResult {
++        val result = respond(instructions, input, schema = null, search = false, purpose = HelperPurpose.MEANING)
++        onText(result.text)
++        return result
++    }
++
++    private fun requestBody(instructions: String, input: String, schema: JsonObject?, search: Boolean): JsonObject =
++        buildJsonObject {
++            put("systemInstruction", buildJsonObject {
++                put("parts", buildJsonArray { add(buildJsonObject { put("text", instructions) }) })
++            })
++            put("contents", buildJsonArray {
++                add(buildJsonObject {
++                    put("role", "user")
++                    put("parts", buildJsonArray { add(buildJsonObject { put("text", input) }) })
++                })
++            })
++            put("generationConfig", buildJsonObject {
++                // Thinking tokens count against this limit on current models, so it is larger than OpenAI's.
++                put("maxOutputTokens", if (schema == null) TEXT_OUTPUT_TOKENS else STRUCTURED_OUTPUT_TOKENS)
++                if (schema != null) {
++                    put("responseMimeType", "application/json")
++                    put("responseJsonSchema", schema)
++                }
++            })
++            // Mural never asks for a schema and search in the same request.
++            if (search) put("tools", buildJsonArray { add(buildJsonObject { put("googleSearch", buildJsonObject { }) }) })
++        }
++
++    private suspend fun post(body: JsonObject): JsonObject {
++        val key = readCredential() ?: throw GeminiException.MissingKey
++        val request = Request.Builder()
++            .url(baseUrl.newBuilder().addPathSegments("models/$MODEL:generateContent").build())
++            .header("x-goog-api-key", key)
++            .header("Content-Type", JSON_MEDIA_TYPE.toString())
++            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
++            .build()
++
++        // Parse on OkHttp's worker while the continuation stays cancellable, as APIClient does.
++        return suspendCancellableCoroutine { continuation ->
++            val call = client.newCall(request)
++            continuation.invokeOnCancellation { call.cancel() }
++            call.enqueue(object : Callback {
++                override fun onFailure(call: Call, error: IOException) {
++                    if (continuation.isActive) continuation.resumeWithException(error)
++                }
++                override fun onResponse(call: Call, response: Response) {
++                    try {
++                        val value = response.use {
++                            if (it.code !in 200..299) {
++                                val reason = runCatching {
++                                    errorReason(JSON.parseToJsonElement(it.peekBody(16_384).string()).jsonObject)
++                                }.getOrNull()
++                                throw GeminiException.Http(it.code, reason)
++                            }
++                            val payload = it.readBoundedBody()
++                            try { JSON.parseToJsonElement(payload).jsonObject }
++                            catch (_: Exception) { throw GeminiException.InvalidResponse }
++                        }
++                        if (continuation.isActive) continuation.resume(value)
++                    } catch (error: Exception) {
++                        if (continuation.isActive) continuation.resumeWithException(error)
++                    }
++                }
++            })
++        }
++    }
++
++    /** Gemini reports a bad key as HTTP 400, so the machine-readable reason is needed to tell it from a bad request. */
++    private fun errorReason(payload: JsonObject): String? {
++        val error = payload["error"] as? JsonObject ?: return null
++        val details = error["details"] as? JsonArray ?: return null
++        return details.firstNotNullOfOrNull { ((it as? JsonObject)?.get("reason") as? JsonPrimitive)?.contentOrNull }
++    }
++
++    private fun Response.readBoundedBody(): String {
++        val responseBody = body ?: throw GeminiException.InvalidResponse
++        if (responseBody.contentLength() > MAX_RESPONSE_BYTES) throw GeminiException.InvalidResponse
++        val source = responseBody.source()
++        val buffer = Buffer()
++        var total = 0L
++        while (true) {
++            val count = source.read(buffer, minOf(8_192L, MAX_RESPONSE_BYTES + 1L - total))
++            if (count == -1L) break
++            total += count
++            if (total > MAX_RESPONSE_BYTES) throw GeminiException.InvalidResponse
++        }
++        return buffer.readString(Charsets.UTF_8)
++    }
++
++    companion object {
++        /** Taken from Google's current Gemini API examples. Change this one value to use another model. */
++        internal const val MODEL = "gemini-3.8-flash"
++        private const val TEXT_OUTPUT_TOKENS = 4_096
++        private const val STRUCTURED_OUTPUT_TOKENS = 8_192
++        private val API_BASE_URL = HttpUrl.Builder()
++            .scheme("https")
++            .host("generativelanguage.googleapis.com")
++            .addPathSegment("v1beta")
++            .addPathSegment("")
++            .build()
++        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
++        private const val MAX_RESPONSE_BYTES = 1_048_576L
++        private val JSON = Json { ignoreUnknownKeys = true }
++
++        private fun defaultClient() = OkHttpClient.Builder()
++            .connectTimeout(45, TimeUnit.SECONDS)
++            .readTimeout(60, TimeUnit.SECONDS)
++            .writeTimeout(45, TimeUnit.SECONDS)
++            .callTimeout(60, TimeUnit.SECONDS)
++            .followRedirects(false)
++            .followSslRedirects(false)
++            .cookieJar(CookieJar.NO_COOKIES)
++            .cache(null)
++            .build()
++    }
++}
++
++/** Failures from the Gemini adapter. Messages are fixed text; provider error bodies are never surfaced. */
++sealed class GeminiException(message: String) : IOException(message) {
++    data object MissingKey : GeminiException("Add your Gemini key in Settings to begin.")
++    data object InvalidResponse : GeminiException("Gemini returned an incomplete response. Please try again.")
++    data object Incomplete : GeminiException("Gemini returned an incomplete response. Please try again.")
++    data object Refused : GeminiException("Mural couldn't complete that request. Try a different topic.")
++    class Http(val status: Int, reason: String? = null) : GeminiException("Gemini couldn't complete the request (HTTP $status).") {
++        val kind: ProviderFailureKind = when {
++            status == 401 || reason == "API_KEY_INVALID" -> ProviderFailureKind.authentication
++            status == 403 || status == 404 -> ProviderFailureKind.modelAccess
++            status == 429 -> ProviderFailureKind.rateLimit
++            status == 408 || status >= 500 -> ProviderFailureKind.unavailable
++            status == 400 || status == 422 -> ProviderFailureKind.invalidRequest
++            else -> ProviderFailureKind.unknown
++        }
++    }
++}
+--- /dev/null
++++ b/apps/android/app/src/main/java/chat/mural/network/GeminiResponse.kt
+@@ -0,0 +1,56 @@
++package chat.mural.network
++
++import chat.mural.core.SourceLink
++import java.net.URI
++import kotlinx.serialization.json.*
++
++/** Decodes a Gemini generateContent reply and keeps only safe https citations from Google Search grounding. */
++internal fun decodeGeminiResponse(response: JsonObject): APIResult {
++    if (response.obj("promptFeedback")?.string("blockReason") != null) throw GeminiException.Refused
++    val candidate = response.array("candidates").firstOrNull() as? JsonObject ?: throw GeminiException.Incomplete
++    when (candidate.string("finishReason")) {
++        null, "STOP" -> Unit
++        "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY" -> throw GeminiException.Refused
++        else -> throw GeminiException.Incomplete // MAX_TOKENS, RECITATION and anything unknown
++    }
++
++    val text = StringBuilder()
++    for (partElement in candidate.obj("content")?.array("parts").orEmpty()) {
++        val part = partElement as? JsonObject ?: continue
++        if ((part["thought"] as? JsonPrimitive)?.booleanOrNull == true) continue // reasoning summaries are not replies
++        part.string("text")?.let(text::append)
++    }
++    if (text.isBlank()) throw GeminiException.Incomplete
++
++    val metadata = candidate.obj("groundingMetadata")
++    val sources = linkedMapOf<String, SourceLink>()
++    for (chunk in metadata?.array("groundingChunks").orEmpty()) {
++        val web = (chunk as? JsonObject)?.obj("web") ?: continue
++        val url = web.string("uri") ?: continue
++        if (isSafeSourceUrl(url)) sources.putIfAbsent(url, SourceLink(web.string("title") ?: "Source", url))
++    }
++    val usage = response.obj("usageMetadata")
++    return APIResult(
++        text = text.toString(),
++        sources = sources.values.toList(),
++        usage = APIUsage(
++            input = usage.tokens("promptTokenCount"),
++            output = (usage.tokens("candidatesTokenCount") + usage.tokens("thoughtsTokenCount")).coerceAtMost(1_000_000_000),
++            searches = metadata?.array("webSearchQueries")?.size ?: 0,
++        ),
++    )
++}
++
++// Same rule as TeachingResponse.kt, kept private here so the OpenAI decoder stays untouched.
++private fun isSafeSourceUrl(value: String): Boolean = try {
++    val uri = URI(value)
++    uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null
++} catch (_: Exception) {
++    false
++}
++
++private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
++private fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
++private fun JsonObject.array(key: String): JsonArray = this[key] as? JsonArray ?: JsonArray(emptyList())
++private fun JsonObject?.tokens(key: String): Int =
++    ((this?.get(key) as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 1_000_000_000)
+--- a/apps/android/app/src/main/java/chat/mural/ui/SettingsScreen.kt
++++ b/apps/android/app/src/main/java/chat/mural/ui/SettingsScreen.kt
+@@ -63,6 +63,7 @@
+ import androidx.compose.ui.window.DialogWindowProvider
+ import chat.mural.MuralViewModel
+ import chat.mural.R
++import chat.mural.core.AIProvider
+ import chat.mural.core.LanguageRegistry
+ import chat.mural.core.MeaningLanguages
+ import chat.mural.core.MinuteBalanceTime
+@@ -80,6 +81,7 @@
+     var page by rememberSaveable { mutableStateOf("main") }
+     var keyDialog by rememberSaveable { mutableStateOf(false) }
+     var keyDialogUseAfterSave by rememberSaveable { mutableStateOf(false) }
++    var keyDialogForceOpenAI by rememberSaveable { mutableStateOf(false) }
+     var deleteKey by rememberSaveable { mutableStateOf(false) }
+     var deleteAll by rememberSaveable { mutableStateOf(false) }
+     var permissionDetails by rememberSaveable { mutableStateOf(false) }
+@@ -99,6 +101,8 @@
+         if (focusAdvanced) listState.scrollToItem(4)
+     }
+     val prefs = vm.archive.preferences
++    val gemini = vm.aiProvider == AIProvider.GEMINI
++    val keyTitle = stringResource(if (gemini) R.string.settings_gemini_key else R.string.settings_openai_key)
+     val uriHandler = LocalUriHandler.current
+     val context = LocalContext.current
+     val version = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
+@@ -107,8 +111,9 @@
+         if (vm.isRunning) return
+         val choice = chat.mural.core.ConversationProvider.valueOf(id)
+         if (choice == vm.conversationProvider) return
++        // Voice always uses the OpenAI key, so personal conversation mode requires it even when helpers use Gemini.
+         if (choice == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey) {
+-            keyDialogUseAfterSave = true; keyDialog = true
++            keyDialogUseAfterSave = true; keyDialogForceOpenAI = true; keyDialog = true
+         } else {
+             if (choice == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
+                 checkingSwitch = true
+@@ -117,6 +122,17 @@
+             switchTicket++; pendingSource = choice; sourceDialog = true
+         }
+     }
++    fun chooseAIProvider(id: String) {
++        if (vm.isRunning) return
++        val choice = AIProvider.valueOf(id)
++        if (choice == vm.aiProvider) return
++        vm.selectAIProvider(choice)
++        if (vm.aiProvider != choice) return
++        // Each provider keeps its own key; ask only when this one has none yet.
++        if (!(if (choice == AIProvider.GEMINI) vm.hasGeminiKey else vm.hasKey)) {
++            keyDialogUseAfterSave = true; keyDialogForceOpenAI = false; keyDialog = true
++        }
++    }
+     androidx.compose.runtime.LaunchedEffect(sourceDialog, pendingSource) {
+         if (sourceDialog && pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
+             checkingSwitch = true; switchBalance = vm.checkHostedBalanceForSwitch(); checkingSwitch = false
+@@ -127,7 +143,7 @@
+         val title = when (page) {
+             "interests" -> stringResource(R.string.settings_interests_label)
+             "data" -> stringResource(R.string.settings_learning_data)
+-            "key" -> stringResource(R.string.settings_openai_key)
++            "key" -> keyTitle
+             "about" -> stringResource(R.string.settings_about)
+             else -> stringResource(R.string.settings_navigation_title)
+         }
+@@ -201,13 +217,23 @@
+                                     chat.mural.core.ConversationProvider.PERSONAL_KEY.name to stringResource(R.string.settings_my_openai_key)),
+                                 "settings-conversation-access", !vm.isRunning, ::chooseSource)
+                             if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
+-                                Text(stringResource(R.string.settings_personal_key_note), style = MaterialTheme.typography.bodySmall,
++                                Text(stringResource(if (gemini) R.string.settings_personal_gemini_key_note else R.string.settings_personal_key_note),
++                                    style = MaterialTheme.typography.bodySmall,
+                                     color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                             }
+-                            if (vm.hasKey || vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
++                            SettingsDivider()
++                            SettingsChoiceRow(stringResource(R.string.settings_ai_provider),
++                                stringResource(if (gemini) R.string.settings_provider_gemini else R.string.settings_provider_openai),
++                                vm.aiProvider.name,
++                                listOf(
++                                    AIProvider.OPENAI.name to stringResource(R.string.settings_provider_openai),
++                                    AIProvider.GEMINI.name to stringResource(R.string.settings_provider_gemini),
++                                ),
++                                "settings-ai-provider", !vm.isRunning, ::chooseAIProvider)
++                            if (vm.hasActiveKey || vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
+                                 SettingsDivider()
+-                                SettingsRow(stringResource(R.string.settings_openai_key),
+-                                    stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required),
++                                SettingsRow(keyTitle,
++                                    stringResource(if (vm.hasActiveKey) R.string.settings_key_saved_short else R.string.settings_key_required),
+                                     symbol = SettingsSymbol.KEY, chevron = true, modifier = Modifier.testTag("advanced-api-key"),
+                                     onClick = { page = "key" })
+                             }
+@@ -263,18 +289,20 @@
+                     }
+                 }
+                 "key" -> item {
+-                    SettingsGroup(footer = stringResource(R.string.settings_key_owner_footer)) {
+-                        SettingsRow(stringResource(R.string.settings_openai_key),
+-                            stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required))
++                    SettingsGroup(footer = stringResource(if (gemini) R.string.settings_gemini_key_owner_footer else R.string.settings_key_owner_footer)) {
++                        SettingsRow(keyTitle,
++                            stringResource(if (vm.hasActiveKey) R.string.settings_key_saved_short else R.string.settings_key_required))
+                         SettingsDivider()
+-                        SettingsRow(stringResource(if (vm.hasKey) R.string.settings_replace_key else R.string.settings_save_key),
++                        SettingsRow(stringResource(if (vm.hasActiveKey) R.string.settings_replace_key else R.string.settings_save_key),
+                             enabled = !vm.isRunning, chevron = true, onClick = {
+-                                keyDialogUseAfterSave = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
++                                keyDialogUseAfterSave = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasActiveKey
++                                keyDialogForceOpenAI = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
+                                 keyDialog = true
+                             })
+                         SettingsDivider()
+-                        SettingsRow(stringResource(R.string.settings_open_api_keys), onClick = { open("https://platform.openai.com/api-keys") })
+-                        if (vm.hasKey) {
++                        SettingsRow(stringResource(R.string.settings_open_api_keys),
++                            onClick = { open(if (gemini) "https://aistudio.google.com/apikey" else "https://platform.openai.com/api-keys") })
++                        if (vm.hasActiveKey) {
+                             SettingsDivider()
+                             SettingsRow(stringResource(R.string.settings_remove_key), enabled = !vm.isRunning,
+                                 tint = MuralColors.Red, onClick = { deleteKey = true })
+@@ -290,7 +318,7 @@
+                         }
+                         SettingsDivider()
+                         SettingsRow(stringResource(R.string.settings_usage_billing_link),
+-                            onClick = { open("https://platform.openai.com/usage") })
++                            onClick = { open(if (gemini) "https://ai.google.dev/gemini-api/docs/billing" else "https://platform.openai.com/usage") })
+                         if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
+                             val usage = UsageSummary.of(vm.archive.sessions)
+                             SettingsDivider()
+@@ -313,6 +341,11 @@
+                         SettingsDivider()
+                         SettingsRow(stringResource(R.string.settings_openai_data_controls),
+                             onClick = { open("https://developers.openai.com/api/docs/guides/your-data") })
++                        if (gemini) {
++                            SettingsDivider()
++                            SettingsRow(stringResource(R.string.settings_gemini_data_controls),
++                                onClick = { open("https://ai.google.dev/gemini-api/terms") })
++                        }
+                         Text(stringResource(R.string.settings_data_use_footer), style = MaterialTheme.typography.bodySmall,
+                             color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                         SettingsDivider()
+@@ -375,7 +408,9 @@
+             Text(stringResource(if (pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES)
+                 R.string.account_mural_minutes else R.string.settings_my_openai_key))
+         } }, dismissButton = { MuralTextButton(onClick = { switchTicket++; sourceDialog = false }) { Text(stringResource(R.string.common_cancel)) } })
+-    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, onDismiss = { keyDialog = false })
++    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, forceOpenAI = keyDialogForceOpenAI, onDismiss = {
++        keyDialog = false; keyDialogForceOpenAI = false
++    })
+     if (notices) NoticesDialog(onDismiss = { notices = false })
+     if (history) SettingsHistorySheet(vm, onDismiss = { history = false }, onSelect = { transcript = it }, onDelete = { deleteSession = it })
+     if (permissionDetails) AlertDialog(onDismissRequest = { permissionDetails = false },
+@@ -393,7 +428,7 @@
+                 enabled = !vm.isRunning, modifier = Modifier.testTag("review-ai-consent")) { Text(stringResource(R.string.settings_review_consent_button)) }
+         }, dismissButton = { MuralTextButton(onClick = { permissionDetails = false }) { Text(stringResource(R.string.common_close)) } })
+     if (deleteKey) ConfirmDialog(stringResource(R.string.settings_delete_key_confirm_title), stringResource(R.string.settings_delete_key_confirm_message), stringResource(R.string.common_delete), {
+-        vm.deleteKey(); deleteKey = false
++        if (gemini) vm.deleteGeminiKey() else vm.deleteKey(); deleteKey = false
+     }, { deleteKey = false })
+     if (deleteAll) ConfirmDialog(stringResource(R.string.settings_delete_all_confirm_title), stringResource(R.string.settings_delete_all_confirm_message), stringResource(R.string.settings_delete_all_confirm_button), {
+         vm.deleteLearningData(); deleteAll = false
+@@ -447,9 +482,10 @@
+ }
+ 
+ @Composable
+-private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, onDismiss: () -> Unit) {
++private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, forceOpenAI: Boolean = false, onDismiss: () -> Unit) {
+     // Intentionally starts empty even when a key exists; secrets never flow back into Compose state.
+     var key by remember { mutableStateOf("") }
++    val saveOpenAI = forceOpenAI || vm.aiProvider != AIProvider.GEMINI
+     Dialog(onDismissRequest = { key = ""; onDismiss() }) {
+         val view = LocalView.current
+         DisposableEffect(view) {
+@@ -473,7 +509,10 @@
+                 )
+                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                     MuralTextButton(onClick = { key = ""; onDismiss() }) { Text(stringResource(R.string.common_cancel)) }
+-                    Button(onClick = { vm.saveKey(key.trim(), useAfterSave); key = ""; onDismiss() }, enabled = key.isNotBlank()) { Text(stringResource(R.string.common_save)) }
++                    Button(onClick = {
++                        if (saveOpenAI) vm.saveKey(key.trim(), useAfterSave) else vm.saveGeminiKey(key.trim(), useAfterSave)
++                        key = ""; onDismiss()
++                    }, enabled = key.isNotBlank()) { Text(stringResource(R.string.common_save)) }
+                 }
+             }
+         }
+--- /dev/null
++++ b/apps/android/app/src/main/res/values-es/gemini.xml
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="settings_provider_openai">OpenAI</string>
++    <string name="settings_provider_gemini">Google Gemini</string>
++    <string name="settings_ai_provider">Proveedor de IA</string>
++    <string name="settings_gemini_key">Clave de API de Gemini</string>
++    <string name="settings_gemini_key_owner_footer">El uso se factura a tu proyecto de Google AI, que puede incluir un nivel gratuito. La clave se guarda cifrada en este teléfono y solo se envía a Google. Gemini responde los mensajes escritos, los significados, las consultas y los temas. Las conversaciones de voz siguen usando tu clave de OpenAI.</string>
++    <string name="settings_personal_gemini_key_note">Sin límite de minutos de Mural. Tu proyecto de Google AI cubre el uso de Gemini. Las conversaciones de voz siguen usando tu clave de OpenAI.</string>
++    <string name="settings_gemini_data_controls">Uso de datos de la API de Gemini</string>
++    <string name="error_gemini_missing_key">Añade tu clave de Gemini en Ajustes para empezar.</string>
++    <string name="error_key_invalid_gemini">Introduce una clave de API de Gemini válida.</string>
++    <string name="error_gemini_401">No se aceptó tu clave de Gemini. Revísala en Ajustes.</string>
++    <string name="error_gemini_403_404">Es posible que esta clave de API no tenga acceso al modelo de Gemini solicitado. Revisa tu proyecto de Google AI.</string>
++    <string name="error_gemini_429">Gemini está limitando las solicitudes o se agotó tu cuota. Espera un momento e inténtalo de nuevo, o revisa los límites de tu proyecto de Google AI.</string>
++    <string name="error_gemini_generic">Gemini no pudo completar la solicitud (HTTP %1$d). Inténtalo de nuevo.</string>
++    <string name="error_gemini_incomplete_response">Gemini devolvió una respuesta incompleta. Inténtalo de nuevo.</string>
++</resources>
+--- /dev/null
++++ b/apps/android/app/src/main/res/values/gemini.xml
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="settings_provider_openai">OpenAI</string>
++    <string name="settings_provider_gemini">Google Gemini</string>
++    <string name="settings_ai_provider">AI provider</string>
++    <string name="settings_gemini_key">Gemini API key</string>
++    <string name="settings_gemini_key_owner_footer">Usage is billed to your Google AI project, which may include a free tier. The key stays encrypted on this phone and is sent only to Google. Gemini answers written replies, meanings, lookups and topics. Voice conversations still use your OpenAI key.</string>
++    <string name="settings_personal_gemini_key_note">No Mural minute limit. Your Google AI project covers Gemini usage. Voice conversations still use your OpenAI key.</string>
++    <string name="settings_gemini_data_controls">Gemini API data use</string>
++    <string name="error_gemini_missing_key">Add your Gemini key in Settings to begin.</string>
++    <string name="error_key_invalid_gemini">Enter a valid Gemini API key.</string>
++    <string name="error_gemini_401">Your Gemini key wasn\'t accepted. Check it in Settings.</string>
++    <string name="error_gemini_403_404">This API key may not have access to the requested Gemini model. Check your Google AI project.</string>
++    <string name="error_gemini_429">Gemini is limiting requests or your quota is used up. Wait briefly and try again, or check your Google AI project\'s limits.</string>
++    <string name="error_gemini_generic">Gemini couldn\'t complete the request (HTTP %1$d). Please try again.</string>
++    <string name="error_gemini_incomplete_response">Gemini returned an incomplete response. Please try again.</string>
++</resources>
+--- /dev/null
++++ b/apps/android/app/src/test/java/chat/mural/network/GeminiClientTest.kt
+@@ -0,0 +1,117 @@
++package chat.mural.network
++
++import chat.mural.core.ProviderFailureKind
++import kotlinx.coroutines.runBlocking
++import kotlinx.serialization.json.*
++import okhttp3.OkHttpClient
++import okhttp3.mockwebserver.MockResponse
++import okhttp3.mockwebserver.MockWebServer
++import org.junit.After
++import org.junit.Assert.*
++import org.junit.Before
++import org.junit.Test
++
++class GeminiClientTest {
++    private lateinit var server: MockWebServer
++    private lateinit var gemini: GeminiClient
++
++    @Before fun setup() {
++        server = MockWebServer(); server.start()
++        gemini = GeminiClient("AIza-fake-test-key-only-0000", OkHttpClient.Builder().followRedirects(false).build(), server.url("/v1beta/"))
++    }
++    @After fun teardown() { server.shutdown() }
++
++    private fun reply(text: String = "Hola", extra: String = "", finish: String = "STOP") =
++        """{"candidates":[{"content":{"parts":[{"text":"$text"}]},"finishReason":"$finish"$extra}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":5,"thoughtsTokenCount":2}}"""
++
++    @Test fun sendsTheKeyInAHeaderAndNeverInTheUrl() = runBlocking {
++        server.enqueue(MockResponse().setBody(reply()))
++        val result = gemini.respond("policy", "Hei")
++        assertEquals("Hola", result.text); assertEquals(APIUsage(12, 7, 0), result.usage)
++        val sent = server.takeRequest()
++        assertEquals("/v1beta/models/${GeminiClient.MODEL}:generateContent", sent.path)
++        assertEquals("AIza-fake-test-key-only-0000", sent.getHeader("x-goog-api-key"))
++        assertNull(sent.getHeader("Authorization"))
++        val body = Json.parseToJsonElement(sent.body.readUtf8()).jsonObject
++        assertEquals("policy", body["systemInstruction"]!!.jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content)
++        assertEquals("Hei", body["contents"]!!.jsonArray[0].jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content)
++        assertNull(body["tools"]); assertNull(body["generationConfig"]!!.jsonObject["responseJsonSchema"])
++    }
++
++    @Test fun structuredRequestsCarryTheSchemaAndSearchRequestsEnableGrounding() = runBlocking {
++        server.enqueue(MockResponse().setBody(reply("{}")))
++        server.enqueue(MockResponse().setBody(reply()))
++        val schema = buildJsonObject { put("type", "object") }
++        gemini.respond("policy", "x", schema = schema)
++        gemini.respond("policy", "x", search = true)
++        val structured = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["generationConfig"]!!.jsonObject
++        assertEquals(schema, structured["responseJsonSchema"]); assertEquals("application/json", structured["responseMimeType"]!!.jsonPrimitive.content)
++        val searched = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
++        assertNotNull(searched["tools"]!!.jsonArray[0].jsonObject["googleSearch"])
++    }
++
++    @Test fun keepsOnlySafeHttpsGroundingSourcesAndSkipsReasoningParts() = runBlocking {
++        val grounding = ""","groundingMetadata":{"webSearchQueries":["q"],"groundingChunks":[
++            {"web":{"uri":"https://example.com/a","title":"Example"}},{"web":{"uri":"http://insecure.test/b","title":"Plain"}},
++            {"web":{"uri":"https://user:pw@example.com/c","title":"Credentials"}},{"web":{"uri":"https://example.com/a","title":"Duplicate"}}]}"""
++        val body = """{"candidates":[{"content":{"parts":[{"text":"private reasoning","thought":true},{"text":"Answer"}]},"finishReason":"STOP"$grounding}]}"""
++        server.enqueue(MockResponse().setBody(body))
++        val result = gemini.respond("policy", "x", search = true)
++        assertEquals("Answer", result.text)
++        assertEquals(listOf("https://example.com/a"), result.sources.map { it.url }); assertEquals(1, result.usage.searches)
++    }
++
++    @Test fun missingKeyNeverReachesTheNetwork() = runBlocking {
++        val none = GeminiClient(null, OkHttpClient(), server.url("/v1beta/"))
++        try { none.respond("policy", "x"); fail("sent without a key") } catch (_: GeminiException.MissingKey) { }
++        assertEquals(0, server.requestCount)
++    }
++
++    @Test fun errorsAreClassifiedWithoutExposingProviderMessages() = runBlocking {
++        val badKey = """{"error":{"code":400,"message":"private text","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"""
++        val cases = listOf(400 to badKey to ProviderFailureKind.authentication, 403 to "{}" to ProviderFailureKind.modelAccess,
++            429 to "not json" to ProviderFailureKind.rateLimit, 503 to "" to ProviderFailureKind.unavailable,
++            400 to """{"error":{"status":"INVALID_ARGUMENT"}}""" to ProviderFailureKind.invalidRequest)
++        for ((statusAndBody, kind) in cases) {
++            server.enqueue(MockResponse().setResponseCode(statusAndBody.first).setBody(statusAndBody.second))
++            try { gemini.respond("policy", "x"); fail("accepted an error") }
++            catch (error: GeminiException.Http) {
++                assertEquals(kind, error.kind); assertEquals(statusAndBody.first, error.status)
++                assertFalse(error.message.orEmpty().contains("private"))
++            }
++        }
++        assertEquals(cases.size, server.requestCount)
++    }
++
++    @Test fun blockedTruncatedAndEmptyRepliesNeverBecomeSuccessfulAnswers() = runBlocking {
++        val bodies = listOf(
++            """{"promptFeedback":{"blockReason":"SAFETY"}}""" to GeminiException.Refused,
++            reply(finish = "SAFETY") to GeminiException.Refused,
++            reply(finish = "MAX_TOKENS") to GeminiException.Incomplete,
++            """{"candidates":[]}""" to GeminiException.Incomplete,
++            reply(text = " ") to GeminiException.Incomplete,
++            "not json" to GeminiException.InvalidResponse,
++        )
++        for ((body, expected) in bodies) {
++            server.enqueue(MockResponse().setBody(body))
++            try { gemini.respond("policy", "x"); fail("accepted $body") } catch (error: GeminiException) { assertSame(expected, error) }
++        }
++    }
++
++    @Test fun keyShapesAreCheckedWithoutRejectingNewerGoogleFormats() {
++        assertTrue(isGeminiKey("AIza" + "x".repeat(35))); assertTrue(isGeminiKey("AQ.Ab8-" + "y".repeat(30)))
++        assertFalse(isGeminiKey("short")); assertFalse(isGeminiKey("has space " + "x".repeat(30))); assertFalse(isGeminiKey("é".repeat(30)))
++        assertTrue(isOpenAIKey("sk-" + "x".repeat(30))); assertFalse(isOpenAIKey("AIza" + "x".repeat(35)))
++        // Each provider refuses the other's key, so a key cannot be saved under the wrong provider by accident.
++        assertFalse(isGeminiKey("sk-" + "x".repeat(30)))
++    }
++
++    @Test fun streamMeaningDeliversTheFullTextInOneCallback() = runBlocking {
++        server.enqueue(MockResponse().setBody(reply("meaning text")))
++        val chunks = mutableListOf<String>()
++        val result = gemini.streamMeaning("policy", "input") { chunks += it }
++        assertEquals("meaning text", result.text)
++        assertEquals(listOf("meaning text"), chunks)
++        assertEquals(1, server.requestCount)
++    }
++}
