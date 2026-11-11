@@ -26,7 +26,7 @@ Mural speaks the interface language of your phone: Spanish on a Spanish phone, E
 
 Choose the language you practise and the language for meanings. When you practise Mandarin, captions link each word and show pinyin underneath on Android 10 or later; **Hide pinyin** keeps the characters only. Read the consent to send audio and text to OpenAI. You can decline and still browse your local data.
 
-In **Settings**, save your own OpenAI key for voice. You can also choose Google Gemini as the provider for written replies and learning helpers, and save a Gemini API key. Keys are encrypted with an Android Keystore key and are never included in learning backups. Do not send either key through chat or put it in repository files.
+In **Settings**, save your own OpenAI key for voice. To use Gemini for written conversations and learning helpers, choose **Google Gemini** under **AI provider**, save your Gemini API key, then confirm **My API key** under **Conversation access**. Gemini requests are billed to your Google AI project; voice still requires an OpenAI key. Keys are encrypted with an Android Keystore key and are never included in learning backups. Do not send either key through chat or put it in repository files.
 
 On **Talk**, start a conversation and allow the microphone. You should hear a greeting in the language you chose. **Type instead** lets you practise without the microphone. You can mute, ask for a little help, show meanings, tap a word to look it up, and end the conversation.
 

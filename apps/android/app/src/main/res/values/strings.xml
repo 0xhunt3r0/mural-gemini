@@ -168,7 +168,7 @@
     <string name="settings_section_ai_permission">AI permission</string>
     <string name="settings_ai_consent_accepted">Accepted for this version</string>
     <string name="settings_ai_consent_not_accepted">Not accepted</string>
-    <string name="settings_ai_permission_summary">With permission, Mural sends audio and the text you choose to OpenAI. You can use your history and words without granting it.</string>
+    <string name="settings_ai_permission_summary">With permission, Mural sends voice audio and selected text to OpenAI. Written messages and learning requests go to the provider selected in Settings: OpenAI or Google Gemini. Provider data-handling and retention terms apply. You can use your history and words without granting permission.</string>
     <string name="settings_revoke_consent_button">Withdraw permission</string>
     <string name="settings_review_consent_button">Review and accept</string>
     <string name="settings_export_backup">Export learning backup</string>
@@ -178,7 +178,7 @@
     <string name="settings_section_help_privacy">Help and privacy</string>
     <string name="settings_openai_data_controls">AI Data Controls</string>
     <string name="settings_open_source_notices">Open-source notices</string>
-    <string name="settings_data_use_footer">Audio and selected text go to OpenAI while you practise. Requests disable provider storage where supported; abuse-monitoring retention may still apply. Raw audio is not saved by Mural.</string>
+    <string name="settings_data_use_footer">Voice audio and selected text go to OpenAI. Written messages and learning requests go to the provider selected in Settings: OpenAI or Google Gemini. Provider data-handling and retention terms apply. Raw audio is not saved by Mural.</string>
     <string name="settings_app_version_footer">Mural %1$s · Android</string>
     <string name="settings_open_api_keys">Manage API keys</string>
     <string name="settings_delete_key_confirm_title">Delete the saved key?</string>
@@ -220,7 +220,7 @@
 
     <!-- AI consent -->
     <string name="consent_title">Before we talk.</string>
-    <string name="consent_ai_summary">With your permission, Mural sends audio and selected text to OpenAI to provide conversations and meanings. Provider retention rules apply.</string>
+    <string name="consent_ai_summary">With your permission, Mural sends voice audio and selected text to OpenAI. Written messages and learning requests go to the provider selected in Settings: OpenAI or Google Gemini. Provider data-handling and retention terms apply.</string>
     <string name="consent_local_storage_note">Your learning record is stored on this device. Mural does not save raw audio. You can keep browsing your saved words and conversations without agreeing.</string>
     <string name="consent_privacy_policy_link">Privacy policy</string>
     <string name="consent_agree_button">Agree and continue</string>

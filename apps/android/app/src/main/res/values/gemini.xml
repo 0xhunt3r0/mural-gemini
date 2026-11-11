@@ -4,8 +4,12 @@
     <string name="settings_provider_gemini">Google Gemini</string>
     <string name="settings_ai_provider">AI provider</string>
     <string name="settings_gemini_key">Gemini API key</string>
-    <string name="settings_gemini_key_owner_footer">Usage is billed to your Google AI project, which may include a free tier. The key stays encrypted on this phone and is sent only to Google. Gemini answers written replies, meanings, lookups and topics. Voice conversations still use your OpenAI key.</string>
+    <string name="settings_my_gemini_key">My Gemini key</string>
+    <string name="settings_gemini_key_owner_footer">Written messages and learning requests are sent to Google Gemini and billed to your Google AI project, which may include a free tier. The key stays encrypted on this phone and is sent only to Google. Voice conversations still use your OpenAI key.</string>
     <string name="settings_personal_gemini_key_note">No Mural minute limit. Your Google AI project covers Gemini usage. Voice conversations still use your OpenAI key.</string>
+    <string name="settings_gemini_requires_personal_access">To use Gemini for written conversations, choose My API key under Conversation access. Mural minutes keep using Mural\'s AI. Voice conversations still need your OpenAI key.</string>
+    <string name="settings_gemini_personal_access_active">Written messages and learning requests are sent to Google Gemini. Google's data handling terms apply. Voice conversations still need your OpenAI key.</string>
+    <string name="settings_switch_gemini_key_note">Written messages and learning requests will be sent to Google Gemini and billed to your Google AI project. Google's data handling terms apply. Voice still requires an OpenAI key. Mural minutes remain available if you switch back.</string>
     <string name="settings_gemini_data_controls">Gemini API data use</string>
     <string name="error_gemini_missing_key">Add your Gemini key in Settings to begin.</string>
     <string name="error_key_invalid_gemini">Enter a valid Gemini API key.</string>
