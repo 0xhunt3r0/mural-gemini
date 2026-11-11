@@ -81,7 +81,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     var page by rememberSaveable { mutableStateOf("main") }
     var keyDialog by rememberSaveable { mutableStateOf(false) }
     var keyDialogUseAfterSave by rememberSaveable { mutableStateOf(false) }
-    var keyDialogForceOpenAI by rememberSaveable { mutableStateOf(false) }
+    var keyDialogProvider by rememberSaveable { mutableStateOf(AIProvider.OPENAI) }
     var deleteKey by rememberSaveable { mutableStateOf(false) }
     var deleteAll by rememberSaveable { mutableStateOf(false) }
     var permissionDetails by rememberSaveable { mutableStateOf(false) }
@@ -113,7 +113,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         if (choice == vm.conversationProvider) return
         // Voice always uses the OpenAI key, so personal conversation mode requires it even when helpers use Gemini.
         if (choice == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey) {
-            keyDialogUseAfterSave = true; keyDialogForceOpenAI = true; keyDialog = true
+            keyDialogUseAfterSave = true; keyDialogProvider = AIProvider.OPENAI; keyDialog = true
         } else {
             if (choice == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
                 checkingSwitch = true
@@ -127,10 +127,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         val choice = AIProvider.valueOf(id)
         if (choice == vm.aiProvider) return
         vm.selectAIProvider(choice)
-        if (vm.aiProvider != choice) return
         // Each provider keeps its own key; ask only when this one has none yet.
         if (!(if (choice == AIProvider.GEMINI) vm.hasGeminiKey else vm.hasKey)) {
-            keyDialogUseAfterSave = true; keyDialogForceOpenAI = false; keyDialog = true
+            keyDialogUseAfterSave = false; keyDialogProvider = choice; keyDialog = true
         }
     }
     androidx.compose.runtime.LaunchedEffect(sourceDialog, pendingSource) {
@@ -295,8 +294,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         SettingsDivider()
                         SettingsRow(stringResource(if (vm.hasActiveKey) R.string.settings_replace_key else R.string.settings_save_key),
                             enabled = !vm.isRunning, chevron = true, onClick = {
-                                keyDialogUseAfterSave = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasActiveKey
-                                keyDialogForceOpenAI = vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
+                                keyDialogProvider = vm.aiProvider
+                                keyDialogUseAfterSave = vm.aiProvider == AIProvider.OPENAI &&
+                                    vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey
                                 keyDialog = true
                             })
                         SettingsDivider()
@@ -408,8 +408,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
             Text(stringResource(if (pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES)
                 R.string.account_mural_minutes else R.string.settings_my_openai_key))
         } }, dismissButton = { MuralTextButton(onClick = { switchTicket++; sourceDialog = false }) { Text(stringResource(R.string.common_cancel)) } })
-    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, forceOpenAI = keyDialogForceOpenAI, onDismiss = {
-        keyDialog = false; keyDialogForceOpenAI = false
+    if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, keyDialogProvider, onDismiss = {
+        keyDialog = false
     })
     if (notices) NoticesDialog(onDismiss = { notices = false })
     if (history) SettingsHistorySheet(vm, onDismiss = { history = false }, onSelect = { transcript = it }, onDelete = { deleteSession = it })
@@ -482,10 +482,9 @@ private fun SettingsHistorySheet(vm: MuralViewModel, onDismiss: () -> Unit, onSe
 }
 
 @Composable
-private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, forceOpenAI: Boolean = false, onDismiss: () -> Unit) {
+private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, provider: AIProvider, onDismiss: () -> Unit) {
     // Intentionally starts empty even when a key exists; secrets never flow back into Compose state.
     var key by remember { mutableStateOf("") }
-    val saveOpenAI = forceOpenAI || vm.aiProvider != AIProvider.GEMINI
     Dialog(onDismissRequest = { key = ""; onDismiss() }) {
         val view = LocalView.current
         DisposableEffect(view) {
@@ -510,7 +509,8 @@ private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, forceOpenAI: Bo
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     MuralTextButton(onClick = { key = ""; onDismiss() }) { Text(stringResource(R.string.common_cancel)) }
                     Button(onClick = {
-                        if (saveOpenAI) vm.saveKey(key.trim(), useAfterSave) else vm.saveGeminiKey(key.trim(), useAfterSave)
+                        if (provider == AIProvider.OPENAI) vm.saveKey(key.trim(), useAfterSave)
+                        else vm.saveGeminiKey(key.trim(), useAfterSave)
                         key = ""; onDismiss()
                     }, enabled = key.isNotBlank()) { Text(stringResource(R.string.common_save)) }
                 }
