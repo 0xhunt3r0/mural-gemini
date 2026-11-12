@@ -57,7 +57,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 
-/** Gemini Live uses JSON over WebSocket and PCM audio, unlike the OpenAI WebRTC transport. */
+/** Gemini Live uses JSON WebSocket frames (text or UTF-8 binary) and PCM audio, unlike OpenAI WebRTC. */
 class GeminiLiveTransport(
     context: Context,
     private val scope: CoroutineScope,
@@ -190,30 +190,11 @@ class GeminiLiveTransport(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            if (!isCurrent(attempt) || attempt.socketGeneration.get() != socketGeneration) return
-            if (text.toByteArray(Charsets.UTF_8).size !in 1..MAX_EVENT_BYTES) {
-                failInvalidEvent(attempt, InvalidEventReason.EVENT_SIZE)
-                return
-            }
-            val message = try {
-                JSON.parseToJsonElement(text).jsonObject
-            } catch (error: Exception) {
-                failInvalidEvent(attempt, InvalidEventReason.JSON_PARSE, error)
-                return
-            }
-            try {
-                handleMessage(attempt, message, resumed)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                failInvalidEvent(attempt, InvalidEventReason.EVENT_PROCESSING, error)
-            }
+            handleServerFrame(attempt, resumed, socketGeneration, text.toByteArray(Charsets.UTF_8))
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            if (isCurrent(attempt) && attempt.socketGeneration.get() == socketGeneration) {
-                failInvalidEvent(attempt, InvalidEventReason.BINARY_EVENT)
-            }
+            handleServerFrame(attempt, resumed, socketGeneration, bytes.toByteArray())
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -227,6 +208,27 @@ class GeminiLiveTransport(
             val message = response?.let(::httpFailureMessage)
                 ?: applicationContext.getString(R.string.error_transport_network_lost)
             reconnectOrFail(attempt, resumed, message)
+        }
+    }
+
+    private fun handleServerFrame(attempt: Attempt, resumed: Boolean, socketGeneration: Long, frame: ByteArray) {
+        if (!isCurrent(attempt) || attempt.socketGeneration.get() != socketGeneration) return
+        if (frame.size !in 1..MAX_EVENT_BYTES) {
+            failInvalidEvent(attempt, InvalidEventReason.EVENT_SIZE)
+            return
+        }
+        val message = try {
+            GeminiLiveProtocol.decodeServerMessage(frame)
+        } catch (error: Exception) {
+            failInvalidEvent(attempt, InvalidEventReason.JSON_PARSE, error)
+            return
+        }
+        try {
+            handleMessage(attempt, message, resumed)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            failInvalidEvent(attempt, InvalidEventReason.EVENT_PROCESSING, error)
         }
     }
 
@@ -740,7 +742,6 @@ class GeminiLiveTransport(
         EVENT_SIZE,
         JSON_PARSE,
         EVENT_PROCESSING,
-        BINARY_EVENT,
         AUDIO_MIME,
         AUDIO_BASE64,
         AUDIO_SIZE,

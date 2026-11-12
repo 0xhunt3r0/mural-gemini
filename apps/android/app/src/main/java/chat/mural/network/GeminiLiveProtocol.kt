@@ -1,5 +1,7 @@
 package chat.mural.network
 
+import java.util.Base64
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -7,14 +9,18 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.util.Base64
 
 internal object GeminiLiveProtocol {
     const val MODEL = "gemini-3.8-live"
     const val OUTPUT_SAMPLE_RATE = 24_000
+    private val JSON = Json { ignoreUnknownKeys = true }
+
+    fun decodeServerMessage(frame: ByteArray): JsonObject =
+        JSON.parseToJsonElement(frame.toString(Charsets.UTF_8)).jsonObject
 
     fun setup(instructions: String, language: String?, resumptionHandle: String? = null): JsonObject = buildJsonObject {
         putJsonObject("setup") {

@@ -96,4 +96,12 @@ class GeminiLiveProtocolTest {
         assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm;rate=unknown"))
         assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/ogg"))
     }
+
+    @Test fun decodesJsonServerMessagesDeliveredInBinaryWebSocketFrames() {
+        val message = """{"serverContent":{"turnComplete":true},"futureField":{"ignored":true}}"""
+        val decoded = GeminiLiveProtocol.decodeServerMessage(message.toByteArray(Charsets.UTF_8))
+
+        assertTrue(decoded.getValue("serverContent").jsonObject.getValue("turnComplete").jsonPrimitive.boolean)
+        assertFalse(decoded.containsKey("futureField"))
+    }
 }
