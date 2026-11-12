@@ -108,8 +108,8 @@ internal object GeminiLiveProtocol {
             if (pair.size != 2 || pair.any { it.isBlank() }) return false
             pair[0].trim().lowercase() to pair[1].trim()
         }
-        val rates = parsed.filter { it.first() == "rate" }
-        val channels = parsed.filter { it.first() == "channels" }
+        val rates = parsed.filter { it.first == "rate" }
+        val channels = parsed.filter { it.first == "channels" }
         return rates.size <= 1 &&
             (rates.isEmpty() || rates.single().second.toIntOrNull() == OUTPUT_SAMPLE_RATE) &&
             channels.size <= 1 &&
