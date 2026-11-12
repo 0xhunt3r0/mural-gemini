@@ -361,8 +361,8 @@ class GeminiLiveTransport(
                     emitLevels(attempt.lastInputLevel, attempt.lastOutputLevel, attempt)
                     sendAudio(attempt, pcm)
                 }
-            } catch (_: CancellationException) {
-                throw
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
                 fail(attempt, applicationContext.getString(R.string.error_transport_audio_stopped))
             }
