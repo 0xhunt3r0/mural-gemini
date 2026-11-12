@@ -63,6 +63,18 @@ class ConversationProvidersTest {
             assertFalse(ConversationProviderPolicy.canStart(ConversationProvider.HOSTED_MINUTES, true, invalid))
     }
 
+    @Test fun geminiVoiceRequiresItsPersonalKeyAndNeverUsesHostedMinutes() {
+        val ready = HostedReadiness("owner", 60_000, enabled = true)
+        assertTrue(ConversationProviderPolicy.canStartVoice(AIProvider.GEMINI,
+            ConversationProvider.PERSONAL_KEY, hasKey = true, hosted = HostedReadiness()))
+        assertFalse(ConversationProviderPolicy.canStartVoice(AIProvider.GEMINI,
+            ConversationProvider.PERSONAL_KEY, hasKey = false, hosted = ready))
+        assertFalse(ConversationProviderPolicy.canStartVoice(AIProvider.GEMINI,
+            ConversationProvider.HOSTED_MINUTES, hasKey = true, hosted = ready))
+        assertTrue(ConversationProviderPolicy.canStartVoice(AIProvider.OPENAI,
+            ConversationProvider.HOSTED_MINUTES, hasKey = false, hosted = ready))
+    }
+
     @Test fun acknowledgedGuestRecoveryDetachesOnlyThatOwnersLeasesAndCannotReuseThemForMember() = runTest {
         var guestCalls = 0; var memberCalls = 0; var guestCloses = 0
         val controller = HostedConversationBindings(backgroundScope)

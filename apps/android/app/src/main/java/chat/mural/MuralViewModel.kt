@@ -185,7 +185,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     var hasKey by mutableStateOf(false); private set
     var hasGeminiKey by mutableStateOf(false); private set
     var aiProvider by mutableStateOf(AIProvider.OPENAI); private set
-    /** Key readiness for written replies, meanings, lookups and assessments. Voice always needs the OpenAI key. */
+    /** Key readiness for written replies, meanings, lookups, assessments and the selected voice provider. */
     val hasActiveKey get() = if (aiProvider == AIProvider.GEMINI) hasGeminiKey else hasKey
     val language get() = LanguageRegistry.get(archive.preferences.learningLanguageID)!!
     val learner get() = LearningEngine.project(archive.sessions, language.id, archive.preferences.hiddenWords)
@@ -199,7 +199,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val geminiCredentials = CredentialStore.gemini(application)
     private val gemini: GeminiClient = GeminiClient(geminiCredentials)
     private val aiProviderStore = AIProviderStore(application)
-    private val transport = LiveTransport(application, viewModelScope)
+    private val openAITransport = LiveTransport(application, viewModelScope)
+    private val geminiTransport = GeminiLiveTransport(application, viewModelScope, geminiCredentials)
+    private val transport: VoiceTransport
+        get() = if (aiProvider == AIProvider.GEMINI) geminiTransport else openAITransport
     private val providerStore = ConversationProviderStore(application)
     private val hostedConfiguration = HostedConfiguration.parse(BuildConfig.MANAGED_API_ORIGIN)
     private val accountConfiguration = ManagedAccountConfiguration.parse(BuildConfig.MANAGED_API_ORIGIN, BuildConfig.GOOGLE_SERVER_CLIENT_ID)
@@ -268,7 +271,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val meanings = MeaningController(viewModelScope, canRetryFailure = HostedHelperRetry::canRetryAtBoundary,
         retryDelay = HostedHelperRetry::automaticDelay, stream = { request, onText -> translateMeaning(request, onText) }) { request -> translateMeaning(request) }
     private suspend fun translateMeaning(request: MeaningRequest, onText: ((String) -> Unit)? = null): MeaningResult {
-        if (archive.preferences.aiConsentVersion != 1) throw IllegalStateException("AI processing consent is required.")
+        if (archive.preferences.aiConsentVersion != AIConsent.VERSION) throw IllegalStateException("AI processing consent is required.")
         val module = LanguageRegistry.get(request.learningLanguageID) ?: throw IllegalStateException("Unsupported language.")
         if (request.sessionID in hostedSessionIDs && request.translationInput.toByteArray(Charsets.UTF_8).size > 24_576) throw MeaningInputLimitException()
         val result = teaching(request.sessionID, HelperPurpose.MEANING, request.cacheKey,
@@ -337,17 +340,19 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        transport.onEvent = { event ->
-            try { handle(event) }
-            catch (_: IllegalArgumentException) { notice = getApplication<Application>().getString(R.string.notice_invalid_voice_update) }
-            catch (_: IllegalStateException) { notice = getApplication<Application>().getString(R.string.notice_invalid_voice_update) }
-        }
-        transport.onFailure = { fail(it) }
-        transport.onLevels = { input, output ->
-            inputLevel = input; outputLevel = output
-            if (state == "active" && voiceSession) {
-                if (input > 0.03) activity.inputActive(activityNow())
-                if (output > 0.03) activity.assistantActive(activityNow())
+        listOf<VoiceTransport>(openAITransport, geminiTransport).forEach { voiceTransport ->
+            voiceTransport.onEvent = { event ->
+                try { handle(event) }
+                catch (_: IllegalArgumentException) { notice = getApplication<Application>().getString(R.string.notice_invalid_voice_update) }
+                catch (_: IllegalStateException) { notice = getApplication<Application>().getString(R.string.notice_invalid_voice_update) }
+            }
+            voiceTransport.onFailure = { fail(it) }
+            voiceTransport.onLevels = { input, output ->
+                inputLevel = input; outputLevel = output
+                if (state == "active" && voiceSession) {
+                    if (input > 0.03) activity.inputActive(activityNow())
+                    if (output > 0.03) activity.assistantActive(activityNow())
+                }
             }
         }
         meanings.onChange = { meaning = meanings.text; translating = meanings.isLoading; meaningFailed = meanings.error != null; meaningLimitReached = meanings.error is MeaningInputLimitException }
@@ -361,7 +366,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             val current = archive.sessions.firstOrNull { it.id == snapshot.id }
             val ticket = finalAssessmentTickets.firstOrNull { it.matches(snapshot, passage) }
             if (snapshot.id in hostedSessionIDs) false
-            else if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1 || current == null ||
+            else if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != AIConsent.VERSION || current == null ||
                 ticket == null || !FinalAssessmentRecovery.canAttempt(ticket, current, nowSeconds())) false
             else {
                 finalAssessmentTickets = finalAssessmentTickets.map {
@@ -381,7 +386,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun recoverFinalAssessments() {
-        if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != 1) return
+        if (!storageReady || !hasActiveKey || archive.preferences.aiConsentVersion != AIConsent.VERSION) return
         val remaining = FinalAssessmentRecovery.MAX_RECOVERED_PER_LAUNCH - recoveredAssessmentIDs.size
         if (remaining <= 0) return
         FinalAssessmentRecovery.recover(archive.sessions, finalAssessmentTickets, nowSeconds())
@@ -424,6 +429,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             res == R.string.error_http_generic && e is APIClient.APIException.Http -> app.getString(res, e.status)
             res == R.string.error_gemini_generic && e is GeminiException.Http -> app.getString(res, e.status)
             res != 0 -> app.getString(res)
+            e is GeminiLiveException -> e.message ?: app.getString(fallback)
             e is LiveTransport.TransportException -> e.message ?: app.getString(fallback)
             else -> app.getString(fallback)
         }
@@ -442,7 +448,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     }
     private fun cloudReady(): Boolean {
         if (!storageReady) { presentError(getApplication<Application>().getString(R.string.error_resolve_local_history_first)); return false }
-        if (archive.preferences.aiConsentVersion != 1) {
+        if (archive.preferences.aiConsentVersion != AIConsent.VERSION) {
             presentError(getApplication<Application>().getString(R.string.error_accept_ai_consent)); return false
         }
         val currentHosted = session?.id in hostedSessionIDs
@@ -502,7 +508,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     readiness.selectAccount(member.accountID, false)
                     readiness.refresh()
                 } else {
-                    if (archive.preferences.aiConsentVersion != 1 || conversationProvider != ConversationProvider.HOSTED_MINUTES) {
+                    if (archive.preferences.aiConsentVersion != AIConsent.VERSION || conversationProvider != ConversationProvider.HOSTED_MINUTES) {
                         readiness.selectAccount(null, false); return@launch
                     }
                     guests?.acquire()
@@ -586,7 +592,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     /** The creating session, rather than the currently selected settings option, chooses every helper. */
     private suspend fun teaching(localID: String?, purpose: HelperPurpose, logicalID: String,
         instructions: String, input: String, schema: JsonObject? = null, search: Boolean = false, onText: ((String) -> Unit)? = null): APIResult {
-        if (archive.preferences.aiConsentVersion != 1) throw HostedFailure.Unavailable
+        if (archive.preferences.aiConsentVersion != AIConsent.VERSION) throw HostedFailure.Unavailable
         if (localID != null && localID in hostedSessionIDs) {
             return hostedBindings.respond(localID, purpose, logicalID, instructions, input, schema, search, onText)
         }
@@ -745,7 +751,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         if (LanguageRegistry.get(preferences.learningLanguageID) == null || preferences.meaningLanguage !in MeaningLanguages.all || preferences.sessionMinutes !in 1..60) return
         val languageChanged = preferences.learningLanguageID != language.id
         actionJob?.cancel(); clearLookup(); working = false
-        if (preferences.aiConsentVersion != 1) {
+        if (preferences.aiConsentVersion != AIConsent.VERSION) {
             finalAssessments.cancelAll(); hostedBindings.disableHelpers()
             hostedFinalAssessmentJobs.values.toList().forEach { it.cancel() }; hostedFinalAssessmentJobs.clear()
         }
@@ -814,14 +820,19 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         val continuing = continuationSession
         val continuingOwner = continuationOwnerID
         val choice = conversationProvider
+        if (aiProvider == AIProvider.GEMINI && choice != ConversationProvider.PERSONAL_KEY) {
+            presentError(getApplication<Application>().getString(R.string.settings_gemini_requires_personal_access))
+            return
+        }
         if (choice == ConversationProvider.HOSTED_MINUTES && accountChangeBlocked) {
             presentError(getApplication<Application>().getString(R.string.hosted_checking_previous))
             reconcileHostedSessions(); return
         }
-        if (!ConversationProviderPolicy.canStart(choice, hasKey, hostedReadiness)) {
+        if (!ConversationProviderPolicy.canStartVoice(aiProvider, choice, hasActiveKey, hostedReadiness)) {
             if (choice == ConversationProvider.HOSTED_MINUTES) {
                 showMinuteAccess = true; refreshHostedReadiness()
-            } else presentError(getApplication<Application>().getString(R.string.error_missing_key), true)
+            } else presentError(getApplication<Application>().getString(
+                if (aiProvider == AIProvider.GEMINI) R.string.error_gemini_missing_key else R.string.error_missing_key), true)
             return
         }
         newSession(true); state = "connecting"
@@ -839,36 +850,40 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         if (choice == ConversationProvider.HOSTED_MINUTES) accountChangeBlocked = true
         connectionJob = viewModelScope.launch {
             try {
-                val provider: LiveSessionProvider = if (choice == ConversationProvider.PERSONAL_KEY) api else {
-                    val owner = requireHostedOwner()
-                    if (selectedAccount.busy || owner.accountID != hostedReadiness.accountID ||
-                        (continuingOwner != null && continuingOwner != owner.accountID)) throw HostedFailure.SignInRequired
-                    val hosted = hostedClient(owner.accountID)
-                    val balance = hostedBalance(owner)
-                    if (!balance.canStartConversation || !hosted.available()) throw HostedFailure.Unavailable
-                    freeBoundaryOwnerID = if (balance.availableMilliseconds in 1 until archive.preferences.sessionMinutes * 60_000L &&
-                        balance.paid?.available == true) owner.accountID else null
-                    if (freeBoundaryOwnerID != null) notice = getApplication<Application>().getString(R.string.notice_free_minutes_first)
-                    // Commit provider provenance and the unresolved-owner marker before making a paid create.
-                    hostedSessionIDs = hostedSessionIDs + id
-                    pendingHostedOwnerID = owner.accountID
-                    withContext(NonCancellable) { providerStore.markHosted(id, owner.accountID) }
-                    object : LiveSessionProvider {
-                        override suspend fun createLiveSession(request: LiveSessionRequest): LiveSessionConnection {
-                            val result = hosted.createLiveSession(request.copy(requestedMilliseconds = archive.preferences.sessionMinutes * 60_000L))
-                            val lease = result.lease as? HostedAPIClient.HostedLease ?: throw HostedFailure.InvalidResponse
-                            withContext(NonCancellable + Dispatchers.Main.immediate) {
-                                if (lease.paid) freeBoundaryOwnerID = null
-                                hostedBindings.bind(id, owner.accountID, binding(lease))
-                                if (session?.id != id || state != "connecting") {
-                                    hostedBindings.ended(id); reconcileHostedSessions()
+                if (aiProvider == AIProvider.GEMINI) {
+                    geminiTransport.connect(instructions, history, module.locale)
+                } else {
+                    val provider: LiveSessionProvider = if (choice == ConversationProvider.PERSONAL_KEY) api else {
+                        val owner = requireHostedOwner()
+                        if (selectedAccount.busy || owner.accountID != hostedReadiness.accountID ||
+                            (continuingOwner != null && continuingOwner != owner.accountID)) throw HostedFailure.SignInRequired
+                        val hosted = hostedClient(owner.accountID)
+                        val balance = hostedBalance(owner)
+                        if (!balance.canStartConversation || !hosted.available()) throw HostedFailure.Unavailable
+                        freeBoundaryOwnerID = if (balance.availableMilliseconds in 1 until archive.preferences.sessionMinutes * 60_000L &&
+                            balance.paid?.available == true) owner.accountID else null
+                        if (freeBoundaryOwnerID != null) notice = getApplication<Application>().getString(R.string.notice_free_minutes_first)
+                        // Commit provider provenance and the unresolved-owner marker before making a paid create.
+                        hostedSessionIDs = hostedSessionIDs + id
+                        pendingHostedOwnerID = owner.accountID
+                        withContext(NonCancellable) { providerStore.markHosted(id, owner.accountID) }
+                        object : LiveSessionProvider {
+                            override suspend fun createLiveSession(request: LiveSessionRequest): LiveSessionConnection {
+                                val result = hosted.createLiveSession(request.copy(requestedMilliseconds = archive.preferences.sessionMinutes * 60_000L))
+                                val lease = result.lease as? HostedAPIClient.HostedLease ?: throw HostedFailure.InvalidResponse
+                                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                                    if (lease.paid) freeBoundaryOwnerID = null
+                                    hostedBindings.bind(id, owner.accountID, binding(lease))
+                                    if (session?.id != id || state != "connecting") {
+                                        hostedBindings.ended(id); reconcileHostedSessions()
+                                    }
                                 }
+                                return result
                             }
-                            return result
                         }
                     }
+                    openAITransport.connect(provider, instructions, history, module.locale)
                 }
-                transport.connect(provider, instructions, history, module.locale)
             } catch (cancelled: CancellationException) {
                 if (choice == ConversationProvider.HOSTED_MINUTES) reconcileHostedSessions()
                 throw cancelled
@@ -1029,7 +1044,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         s.searchCalls = (s.searchCalls.toLong() + usage.searches).coerceAtMost(1_000_000_000).toInt()
     }
     private fun scheduleTranslation(utteranceComplete: Boolean = state == "ended") {
-        if (!archive.preferences.meaningVisible || archive.preferences.aiConsentVersion != 1) return
+        if (!archive.preferences.meaningVisible || archive.preferences.aiConsentVersion != AIConsent.VERSION) return
         val current = session ?: return
         val passage = current.passages.lastOrNull { it.speaker == Speaker.assistant } ?: return
         val request = MeaningRequest(current.id, passage, current.languageID, archive.preferences.meaningLanguage)
@@ -1072,7 +1087,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         ))
     }
     private suspend fun requestAssessment(snapshot: SessionRecord, passage: Passage): FinalAssessmentResult {
-        if (archive.preferences.aiConsentVersion != 1) throw IllegalStateException("AI processing consent is required.")
+        if (archive.preferences.aiConsentVersion != AIConsent.VERSION) throw IllegalStateException("AI processing consent is required.")
         val module = LanguageRegistry.get(snapshot.languageID) ?: throw IllegalStateException("Unsupported language.")
         val result = teaching(snapshot.id, HelperPurpose.ASSESSMENT, passage.revisionKey,
             TeachingPolicy.assessment(module), helperContext(snapshot, passage), assessmentSchema(module.id))
@@ -1088,7 +1103,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 withTimeout(HostedConversationBindings.POST_END_MILLIS) {
                     val result = requestAssessment(snapshot, passage)
-                    if (archive.preferences.aiConsentVersion != 1) return@withTimeout
+                    if (archive.preferences.aiConsentVersion != AIConsent.VERSION) return@withTimeout
                     result.applying(archive.sessions.firstOrNull { it.id == result.sessionID })?.let { updated ->
                         save(updated)
                         if (session?.id == updated.id) session = clone(updated)

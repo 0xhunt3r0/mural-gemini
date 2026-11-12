@@ -25,7 +25,7 @@ Pinyin uses the MIT-licensed [phrase-pinyin-data](https://github.com/mozillazg/p
 ## Components
 
 - `core/`: serializable models, the v1/v2 archive, language modules, evidence rules, teaching policy, `MeaningController`, `FinalAssessmentQueue`, session limits and usage summary. No Android dependencies, so it runs in JVM tests.
-- `network/`: direct HTTPS clients for OpenAI and Gemini, AES-GCM credentials protected by Android Keystore, native WebRTC transport and the platform language detector.
+- `network/`: direct HTTPS clients for OpenAI and Gemini, AES-GCM credentials protected by Android Keystore, native OpenAI WebRTC and Gemini Live WebSocket/PCM transports, and the platform language detector.
 - `LearningRepository`: private `learning.json` written with `AtomicFile`. It never contains the API key.
 - `MuralViewModel`: conversation state, duration and inactivity limits, cancellation, assessments, meanings and persistence. Isolated copies prevent a late response from changing another conversation.
 - `ui/` and `MainActivity`: Compose screens, explicit consent, system permissions, export and import through the Android document picker, and accessibility. Copy lives in `res/values` (English) and `res/values-es` (Spanish).
@@ -51,7 +51,7 @@ The iPhone JSON archive (`schemaVersion` 2) and the v1 Norwegian migration are p
 
 The microphone works only in the foreground. Ending the conversation, losing audio focus, leaving the app or cancelling the connection releases audio and WebRTC. Only the permissions Mural needs are requested, and no recordings are stored. System backups and device transfers exclude the archive and credentials; learners move their learning through explicit export.
 
-The voice protocol is unchanged: OpenAI `POST /v1/live/sessions` with `gpt-live-1`, voice `marin` and the `oai-events` channel. Conversation access must be set to the learner's personal key for written conversations to use the selected AI provider; those helpers use either OpenAI `POST /v1/responses` with `gpt-5.6-luna` or the Gemini `generateContent` API. Voice always requires OpenAI. Keys are entered on the device, never in code. There is no shared key, no required Mural server and no paid call in automated tests.
+With OpenAI selected, voice still uses OpenAI `POST /v1/live/sessions` with `gpt-live-1`, voice `marin` and the `oai-events` channel. With Gemini selected, personal-key access is required and voice uses Google's [Gemini 3.8 Live API](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live) WebSocket with 16 kHz PCM input and 24 kHz PCM output; written and learning requests use Gemini `generateContent`. The transport enables context compression, streams interim and final transcripts, and resumes sessions when Google rotates the WebSocket. Gemini minutes are billed by Google, not Mural. Keys are entered on the device, encrypted with Android Keystore, and never included in code. The documented direct Gemini WebSocket handshake places the user's key in the Google request URL; Google recommends ephemeral tokens for production client-to-server apps. This BYOK path avoids requiring a Mural token service, but the key still leaves the device only for Google's TLS connection. There is no shared key and no paid provider call in automated tests.
 
 ## Keeping both clients in sync
 

@@ -2,7 +2,7 @@
 
 ## Personal installation
 
-You need Android 8.0 or later and an OpenAI project key with access to the models Mural uses for voice. A ChatGPT subscription does not include API credit. Written replies and learning helpers can instead use a Google Gemini API key.
+You need Android 8.0 or later. With OpenAI selected, use an OpenAI project key with access to Mural's voice models; a ChatGPT subscription does not include API credit. Alternatively, a Google Gemini API key can be used for voice, written replies and learning helpers.
 
 Install the generated APK (`apps/android/app/build/outputs/apk/debug/app-debug.apk`) by opening it on the phone and allowing the installation, or from a computer:
 
@@ -26,7 +26,7 @@ Mural speaks the interface language of your phone: Spanish on a Spanish phone, E
 
 Choose the language you practise and the language for meanings. When you practise Mandarin, captions link each word and show pinyin underneath on Android 10 or later; **Hide pinyin** keeps the characters only. Read the consent to send audio and text to OpenAI. You can decline and still browse your local data.
 
-In **Settings**, save your own OpenAI key for voice. To use Gemini for written conversations and learning helpers, choose **Google Gemini** under **AI provider**, save your Gemini API key, then confirm **My API key** under **Conversation access**. Gemini requests are billed to your Google AI project; voice still requires an OpenAI key. Keys are encrypted with an Android Keystore key and are never included in learning backups. Do not send either key through chat or put it in repository files.
+In **Settings**, choose **Google Gemini** under **AI provider**, save your Gemini API key and confirm **My Gemini key** under **Conversation access**. Gemini voice and written/learning requests are sent directly to Google and billed to the associated Google AI project; Mural minutes cannot be used with Gemini voice. The Gemini Live API is in preview and requires a network connection. Keys are encrypted with an Android Keystore key and are never included in learning backups. Do not send either key through chat or put it in repository files.
 
 On **Talk**, start a conversation and allow the microphone. You should hear a greeting in the language you chose. **Type instead** lets you practise without the microphone. You can mute, ask for a little help, show meanings, tap a word to look it up, and end the conversation.
 
@@ -34,7 +34,7 @@ An active voice conversation continues when the screen dims or locks and when yo
 
 A voice conversation ends when audio is interrupted, when it reaches the chosen duration, or after 30 seconds of quiet, with a gentle check-in and a five-second countdown. Speaking or typing gives you time to continue; waiting for an answer also receives a bounded grace period. Locking the screen does not count as a reply or extend the silence limit.
 
-Mural needs the internet to talk, translate and search. History and vocabulary are available offline. Voice requests are billed to your OpenAI project; Gemini requests are billed to your Google AI project. **Settings** shows recorded voice time and a voice cost estimate. The app's time limit is not a billing cap.
+Mural needs the internet to talk, translate and search. History and vocabulary are available offline. Usage is billed to the provider selected for the conversation. **Settings** shows recorded voice time; the app's time limit is not a billing cap.
 
 ## Move data from iPhone
 

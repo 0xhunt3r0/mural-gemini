@@ -47,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import chat.mural.MuralViewModel
 import chat.mural.R
+import chat.mural.core.AIConsent
 import chat.mural.core.CloudAction
 import chat.mural.core.AccountState
 import chat.mural.AccountViewModel
@@ -90,7 +91,7 @@ fun MuralApp(
         }
     }
     fun withConsent(action: CloudAction) {
-        if (vm.archive.preferences.aiConsentVersion == AI_CONSENT_VERSION) perform(action)
+        if (vm.archive.preferences.aiConsentVersion == AIConsent.VERSION) perform(action)
         else {
             vm.pendingCloudAction = action
             showConsent = true
@@ -179,7 +180,7 @@ fun MuralApp(
 
             if (showConsent) AIConsentDialog(
                 onAgree = {
-                    vm.updatePreferences(vm.archive.preferences.copy(aiConsentVersion = AI_CONSENT_VERSION))
+                    vm.updatePreferences(vm.archive.preferences.copy(aiConsentVersion = AIConsent.VERSION))
                     showConsent = false
                     val action = vm.pendingCloudAction
                     vm.pendingCloudAction = null

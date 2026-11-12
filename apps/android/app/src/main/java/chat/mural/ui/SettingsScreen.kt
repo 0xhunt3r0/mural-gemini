@@ -64,6 +64,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
 import chat.mural.core.AIProvider
+import chat.mural.core.AIConsent
 import chat.mural.core.LanguageRegistry
 import chat.mural.core.MeaningLanguages
 import chat.mural.core.MinuteBalanceTime
@@ -461,12 +462,12 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     if (permissionDetails) AlertDialog(onDismissRequest = { permissionDetails = false },
         title = { Text(stringResource(R.string.settings_section_ai_permission)) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text(stringResource(if (prefs.aiConsentVersion == AI_CONSENT_VERSION) R.string.settings_ai_consent_accepted else R.string.settings_ai_consent_not_accepted),
+            Text(stringResource(if (prefs.aiConsentVersion == AIConsent.VERSION) R.string.settings_ai_consent_accepted else R.string.settings_ai_consent_not_accepted),
                 style = MaterialTheme.typography.titleSmall)
             Text(stringResource(R.string.settings_ai_permission_summary), color = MuralColors.Secondary)
         } },
         confirmButton = {
-            if (prefs.aiConsentVersion == AI_CONSENT_VERSION) MuralTextButton(onClick = { permissionDetails = false; revokeConsent = true },
+            if (prefs.aiConsentVersion == AIConsent.VERSION) MuralTextButton(onClick = { permissionDetails = false; revokeConsent = true },
                 enabled = !vm.isRunning, modifier = Modifier.testTag("revoke-ai-consent")) {
                 Text(stringResource(R.string.settings_revoke_consent_button), color = MuralColors.Red)
             } else MuralTextButton(onClick = { permissionDetails = false; onReviewConsent() },

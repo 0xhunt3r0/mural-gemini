@@ -4,6 +4,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import chat.mural.core.AIConsent
 import chat.mural.core.Preferences
 import chat.mural.network.HostedFailure
 import chat.mural.network.ManagedAccountConfiguration
@@ -29,7 +30,7 @@ class StartupErrorTest {
             AccountViewModel::class.java.getDeclaredField("configuration").apply { isAccessible = true }
                 .set(account, requireNotNull(ManagedAccountConfiguration.parse("https://offline.invalid", "123-offline.apps.googleusercontent.com")))
             preferences = vm.archive.preferences
-            vm.updatePreferences(preferences.copy(hasOnboarded = true, aiConsentVersion = 1))
+            vm.updatePreferences(preferences.copy(hasOnboarded = true, aiConsentVersion = AIConsent.VERSION))
         }
     }
     @After fun restore() {

@@ -38,6 +38,10 @@ object ConversationProviderPolicy {
 
     fun canStart(choice: ConversationProvider, hasKey: Boolean, hosted: HostedReadiness): Boolean =
         when (choice) { ConversationProvider.PERSONAL_KEY -> hasKey; ConversationProvider.HOSTED_MINUTES -> hosted.ready }
+
+    fun canStartVoice(provider: AIProvider, access: ConversationProvider, hasKey: Boolean, hosted: HostedReadiness): Boolean =
+        if (provider == AIProvider.GEMINI) access == ConversationProvider.PERSONAL_KEY && hasKey
+        else canStart(access, hasKey, hosted)
 }
 
 /** The same short, valid message history can be passed to either voice provider. */

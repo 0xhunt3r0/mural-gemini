@@ -31,6 +31,17 @@ interface LiveSessionProvider {
     suspend fun createLiveSession(request: LiveSessionRequest): LiveSessionConnection
 }
 
+interface VoiceTransport {
+    var onEvent: ((JsonObject) -> Unit)?
+    var onFailure: ((String) -> Unit)?
+    var onLevels: ((Double, Double) -> Unit)?
+
+    fun send(event: JsonObject): Boolean
+    fun mute(muted: Boolean)
+    fun close()
+    fun disconnect()
+}
+
 /** Lease metadata is opaque to the native audio layer. It never contains credentials or prompt text. */
 interface LiveSessionLease {
     val sessionID: String

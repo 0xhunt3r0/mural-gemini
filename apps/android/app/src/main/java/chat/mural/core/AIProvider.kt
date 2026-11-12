@@ -5,9 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Which AI service answers written replies, meanings, word lookups, topics and assessments when the learner
- * uses their own key. Voice conversations always use OpenAI. Each provider keeps its own key, so switching
- * never removes either one.
+ * Which AI service handles voice and learning requests when the learner uses a personal key.
+ * Each provider keeps its own key, so switching never removes either one.
  */
 enum class AIProvider { OPENAI, GEMINI }
 

@@ -15,7 +15,7 @@ Built with SwiftUI and Liquid Glass on iPhone, and Jetpack Compose on Android. L
 
 ## Android
 
-A native Android client is available in [`apps/android/`](apps/android/README.md), with voice and written conversation, the same eleven language modules, local learning records and iPhone-compatible JSON backups. Its interface is English, and Spanish on a phone set to Spanish. It runs on Android 8.0 or later and supports Mural minutes or your own OpenAI API key stored with Android Keystore. The iPhone client remains available below.
+A native Android client is available in [`apps/android/`](apps/android/README.md), with voice and written conversation, the same eleven language modules, local learning records and iPhone-compatible JSON backups. Its interface is English, and Spanish on a phone set to Spanish. It runs on Android 8.0 or later and supports Mural minutes, your own OpenAI key or your own Gemini key stored with Android Keystore. The iPhone client remains available below.
 
 See the [Android installation/build guide](docs/run-on-android.md) and [Android verification record](verification/android-validation.md). Build a personal-install APK with Java 17 and Android SDK 36:
 
@@ -91,11 +91,11 @@ On iPhone, Mandarin includes optional pinyin in Talk, transcripts and word detai
 
 ## Privacy and API costs
 
-Mural stores conversations, vocabulary and preferences on your device. There is no Mural cloud sync, analytics SDK or advertising. The optional iPhone account feature stores signup data on the account service; conversations and vocabulary stay local. Your API key is stored in the device’s Keychain, excluded from learning exports, and sent only to OpenAI.
+Mural stores conversations, vocabulary and preferences on your device. There is no Mural cloud sync, analytics SDK or advertising. The optional iPhone account feature stores signup data on the account service; conversations and vocabulary stay local. API keys are stored in the device’s secure storage, excluded from learning exports, and sent only to the selected provider.
 
-During practice, audio, selected conversation text, learning context and requested searches go to OpenAI. Mural does not save raw audio. API requests set `store: false` where supported, but that does not disable all provider retention; OpenAI’s abuse-monitoring rules and your project’s settings still apply. [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data)
+On iPhone, audio, selected conversation text, learning context and requested searches go to OpenAI. On Android with personal-key access, voice and learning requests go to the selected OpenAI or Google Gemini provider; Mural minutes use Mural’s hosted service. Mural does not save raw audio. Provider data-handling and retention terms apply. [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data)
 
-OpenAI bills your project for voice, text and search. The app’s usage display is an estimate, and its conversation time limit is not a billing cap. Check your OpenAI project’s usage and spending settings.
+OpenAI or Google bills the project associated with the selected personal key. The app’s usage display is an estimate, and its conversation time limit is not a billing cap. Check your provider project’s usage and spending settings.
 
 ## Planned public service
 
