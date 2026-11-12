@@ -199,7 +199,13 @@ class GeminiLiveTransport(
                 fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
                 return
             }
-            handleMessage(attempt, message, resumed)
+            try {
+                handleMessage(attempt, message, resumed)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+            }
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -278,9 +284,9 @@ class GeminiLiveTransport(
             val inline = (part as? JsonObject)?.get("inlineData") as? JsonObject ?: return@forEach
             val data = inline.string("data") ?: return@forEach
             val mimeType = inline.string("mimeType") ?: return@forEach
-            if (mimeType != "audio/pcm;rate=24000") {
+            if (!GeminiLiveProtocol.supportsOutputAudioMimeType(mimeType)) {
                 fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
-                return@forEach
+                return
             }
             val pcm = try { java.util.Base64.getDecoder().decode(data) } catch (_: IllegalArgumentException) {
                 fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
@@ -398,7 +404,12 @@ class GeminiLiveTransport(
             val track = attempt.audioTrack ?: return@launch
             var offset = 0
             while (offset < pcm.size && isCurrent(attempt) && attempt.playbackGeneration.get() == playbackGeneration) {
-                val written = track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
+                val written = try {
+                    track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
+                } catch (_: Exception) {
+                    fail(attempt, applicationContext.getString(R.string.error_transport_audio_stopped))
+                    return@launch
+                }
                 if (written <= 0) {
                     fail(attempt, applicationContext.getString(R.string.error_transport_audio_stopped))
                     return@launch
@@ -766,13 +777,13 @@ class GeminiLiveTransport(
 
     companion object {
         private const val INPUT_SAMPLE_RATE = 16_000
-        private const val OUTPUT_SAMPLE_RATE = 24_000
+        private const val OUTPUT_SAMPLE_RATE = GeminiLiveProtocol.OUTPUT_SAMPLE_RATE
         private const val INPUT_SAMPLES_PER_CHUNK = 1_600
         private const val OUTPUT_SAMPLES_PER_CHUNK = 2_400
         private const val READY_TIMEOUT_MILLISECONDS = 20_000L
         private const val METER_INTERVAL_MILLISECONDS = 100L
         private const val MAX_EVENT_BYTES = 2_097_152
-        private const val MAX_AUDIO_BYTES = 262_144
+        private const val MAX_AUDIO_BYTES = 1_048_576
         private const val MAX_TRANSCRIPT_CHARS = 50_000
         private const val MAX_SOCKET_QUEUE_BYTES = 1_048_576L
         private const val MAX_ERROR_BYTES = 16_384L

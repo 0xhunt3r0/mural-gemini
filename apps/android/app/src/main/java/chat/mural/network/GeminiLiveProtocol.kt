@@ -14,6 +14,7 @@ import java.util.Base64
 
 internal object GeminiLiveProtocol {
     const val MODEL = "gemini-3.8-live"
+    const val OUTPUT_SAMPLE_RATE = 24_000
 
     fun setup(instructions: String, language: String?, resumptionHandle: String? = null): JsonObject = buildJsonObject {
         putJsonObject("setup") {
@@ -97,6 +98,22 @@ internal object GeminiLiveProtocol {
                 put("data", Base64.getEncoder().encodeToString(pcm))
             }
         }
+    }
+
+    fun supportsOutputAudioMimeType(mimeType: String): Boolean {
+        val parameters = mimeType.split(';')
+        if (!parameters.first().trim().equals("audio/pcm", ignoreCase = true)) return false
+        val parsed = parameters.drop(1).map { parameter ->
+            val pair = parameter.trim().split('=', limit = 2)
+            if (pair.size != 2 || pair.any { it.isBlank() }) return false
+            pair[0].trim().lowercase() to pair[1].trim()
+        }
+        val rates = parsed.filter { it.first() == "rate" }
+        val channels = parsed.filter { it.first() == "channels" }
+        return rates.size <= 1 &&
+            (rates.isEmpty() || rates.single().second.toIntOrNull() == OUTPUT_SAMPLE_RATE) &&
+            channels.size <= 1 &&
+            (channels.isEmpty() || channels.single().second.toIntOrNull() == 1)
     }
 
     internal fun transcriptDelta(previous: String, update: String): Pair<String, String> {

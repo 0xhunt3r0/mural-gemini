@@ -86,4 +86,14 @@ class GeminiLiveProtocolTest {
         assertEquals("audio/pcm;rate=16000", envelope.getValue("mimeType").jsonPrimitive.content)
         assertArrayEquals(byteArrayOf(0, 127, -1, 0), Base64.getDecoder().decode(envelope.getValue("data").jsonPrimitive.content))
     }
+
+    @Test fun acceptsEquivalentMonoPcmOutputMimeTypesAndRejectsUnsupportedAudioFormats() {
+        assertTrue(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm;rate=24000"))
+        assertTrue(GeminiLiveProtocol.supportsOutputAudioMimeType(" Audio/PCM ; channels=1 ; rate=24000 "))
+        assertTrue(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm"))
+        assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm;rate=16000"))
+        assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm;channels=2"))
+        assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/pcm;rate=unknown"))
+        assertFalse(GeminiLiveProtocol.supportsOutputAudioMimeType("audio/ogg"))
+    }
 }
