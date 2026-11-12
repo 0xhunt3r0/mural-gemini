@@ -486,6 +486,9 @@ class GeminiLiveTransport(
     }
 
     private fun prepareAudio(attempt: Attempt) {
+        if (applicationContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            throw GeminiLiveException(applicationContext.getString(R.string.error_transport_microphone))
+        }
         val inputMinBuffer = AudioRecord.getMinBufferSize(
             INPUT_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
