@@ -19,6 +19,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
+import chat.mural.BuildConfig
 import chat.mural.R
 import java.io.IOException
 import java.util.UUID
@@ -190,27 +192,27 @@ class GeminiLiveTransport(
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!isCurrent(attempt) || attempt.socketGeneration.get() != socketGeneration) return
             if (text.toByteArray(Charsets.UTF_8).size !in 1..MAX_EVENT_BYTES) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+                failInvalidEvent(attempt, InvalidEventReason.EVENT_SIZE)
                 return
             }
             val message = try {
                 JSON.parseToJsonElement(text).jsonObject
-            } catch (_: Exception) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+            } catch (error: Exception) {
+                failInvalidEvent(attempt, InvalidEventReason.JSON_PARSE, error)
                 return
             }
             try {
                 handleMessage(attempt, message, resumed)
             } catch (error: CancellationException) {
                 throw error
-            } catch (_: Exception) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+            } catch (error: Exception) {
+                failInvalidEvent(attempt, InvalidEventReason.EVENT_PROCESSING, error)
             }
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             if (isCurrent(attempt) && attempt.socketGeneration.get() == socketGeneration) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+                failInvalidEvent(attempt, InvalidEventReason.BINARY_EVENT)
             }
         }
 
@@ -285,15 +287,15 @@ class GeminiLiveTransport(
             val data = inline.string("data") ?: return@forEach
             val mimeType = inline.string("mimeType") ?: return@forEach
             if (!GeminiLiveProtocol.supportsOutputAudioMimeType(mimeType)) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+                failInvalidEvent(attempt, InvalidEventReason.AUDIO_MIME)
                 return
             }
-            val pcm = try { java.util.Base64.getDecoder().decode(data) } catch (_: IllegalArgumentException) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+            val pcm = try { java.util.Base64.getDecoder().decode(data) } catch (error: IllegalArgumentException) {
+                failInvalidEvent(attempt, InvalidEventReason.AUDIO_BASE64, error)
                 return
             }
             if (pcm.isEmpty() || pcm.size > MAX_AUDIO_BYTES || pcm.size % 2 != 0) {
-                fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+                failInvalidEvent(attempt, InvalidEventReason.AUDIO_SIZE)
                 return
             }
             playAudio(attempt, pcm)
@@ -320,7 +322,7 @@ class GeminiLiveTransport(
 
     private fun emitTranscript(attempt: Attempt, speaker: SpeakerKind, text: String) {
         if (text.length > MAX_TRANSCRIPT_CHARS) {
-            fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+            failInvalidEvent(attempt, InvalidEventReason.TRANSCRIPT_SIZE)
             return
         }
         val previous = if (speaker == SpeakerKind.INPUT) attempt.inputTranscript else attempt.outputTranscript
@@ -622,6 +624,14 @@ class GeminiLiveTransport(
         }
     }
 
+    private fun failInvalidEvent(attempt: Attempt, reason: InvalidEventReason, error: Exception? = null) {
+        if (BuildConfig.DEBUG) {
+            val exceptionType = error?.javaClass?.simpleName?.takeIf(String::isNotBlank)?.let { " exception=$it" }.orEmpty()
+            Log.w(TAG, "Invalid Gemini Live event: ${reason.name}$exceptionType")
+        }
+        fail(attempt, applicationContext.getString(R.string.error_transport_invalid_event))
+    }
+
     private suspend fun cleanupIfCurrent(attempt: Attempt): Boolean = withContext(AUDIO_DISPATCHER) {
         synchronized(lock) {
             if (activeAttempt !== attempt) return@withContext false
@@ -726,6 +736,16 @@ class GeminiLiveTransport(
         if (count == 0) 0.0 else minOf(1.0, sqrt(sum / count) / Short.MAX_VALUE * 4.0)
 
     private enum class SpeakerKind { INPUT, OUTPUT }
+    private enum class InvalidEventReason {
+        EVENT_SIZE,
+        JSON_PARSE,
+        EVENT_PROCESSING,
+        BINARY_EVENT,
+        AUDIO_MIME,
+        AUDIO_BASE64,
+        AUDIO_SIZE,
+        TRANSCRIPT_SIZE,
+    }
 
     private class Attempt(
         val id: Long,
@@ -776,6 +796,7 @@ class GeminiLiveTransport(
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 
     companion object {
+        private const val TAG = "MuralGeminiLive"
         private const val INPUT_SAMPLE_RATE = 16_000
         private const val OUTPUT_SAMPLE_RATE = GeminiLiveProtocol.OUTPUT_SAMPLE_RATE
         private const val INPUT_SAMPLES_PER_CHUNK = 1_600
