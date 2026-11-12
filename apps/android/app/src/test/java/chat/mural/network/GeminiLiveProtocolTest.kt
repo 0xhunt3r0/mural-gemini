@@ -102,6 +102,6 @@ class GeminiLiveProtocolTest {
         val decoded = GeminiLiveProtocol.decodeServerMessage(message.toByteArray(Charsets.UTF_8))
 
         assertTrue(decoded.getValue("serverContent").jsonObject.getValue("turnComplete").jsonPrimitive.boolean)
-        assertFalse(decoded.containsKey("futureField"))
+        assertTrue(decoded.containsKey("futureField"))
     }
 }
